@@ -65,7 +65,7 @@ func loadConfig() AppConfig {
 	if err != nil {
 		return AppConfig{
 			Processor:       *audioProc,
-			MorseMessage:    "CQ CQ DE UVB-76",
+			MorseMessage:    "Hello World HZZ HZZZ",
 			BackgroundImage: "background.jpg",
 			RTMPURL:         "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY",
 			Duration:        0,
@@ -76,7 +76,7 @@ func loadConfig() AppConfig {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return AppConfig{
 			Processor:       *audioProc,
-			MorseMessage:    "CQ CQ DE UVB-76",
+			MorseMessage:    "CQ CQ DE HIZZER",
 			BackgroundImage: "background.jpg",
 			RTMPURL:         "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY",
 			Duration:        0,
@@ -97,9 +97,9 @@ func saveConfig(cfg AppConfig) {
 // --- Audio Processing Parameters ---
 
 type AudioProcessor struct {
-	// UVB-76 specific parameters
+	// HIZZER specific parameters
 	BuzzerEnabled     bool    `json:"buzzer_enabled"`
-	BuzzerFrequency   float64 `json:"buzzer_frequency"` // 4625 Hz typical UVB-76 carrier
+	BuzzerFrequency   float64 `json:"buzzer_frequency"` // 4625 Hz typical HIZZER carrier
 	BuzzerPulseRate   float64 `json:"buzzer_pulse_rate"` // Pulses per second
 	BuzzerModDepth    float64 `json:"buzzer_mod_depth"` // Modulation depth
 
@@ -402,7 +402,7 @@ func (pc *PlaybackController) GetPlaybackProgress() float64 {
 	return float64(pc.streamer.pos) / float64(len(pc.streamer.samples))
 }
 
-// --- UVB-76 Style Audio Processing Functions ---
+// --- HIZZER Style Audio Processing Functions ---
 
 func applyLowPassFilter(samples []float64, cutoffHz float64) []float64 {
 	if cutoffHz >= float64(sampleRate)/2 {
@@ -1665,10 +1665,10 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	lblPresets.SetText("Presets:")
 	settingsWin.Add(lblPresets)
 
-	btnUVB76 := wui.NewButton()
-	btnUVB76.SetBounds(90, 10, 100, 28)
-	btnUVB76.SetText("UVB-76")
-	settingsWin.Add(btnUVB76)
+	btnHIZZER := wui.NewButton()
+	btnHIZZER.SetBounds(90, 10, 100, 28)
+	btnHIZZER.SetText("HIZZER")
+	settingsWin.Add(btnHIZZER)
 
 	btnRadio := wui.NewButton()
 	btnRadio.SetBounds(200, 10, 100, 28)
@@ -2091,7 +2091,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 
 
 	// Preset handlers
-	btnUVB76.SetOnClick(func() {
+	btnHIZZER.SetOnClick(func() {
 		chkBuzzer.SetChecked(true)
 		txtBuzzerFreq.SetText("4625")
 		txtBuzzerRate.SetText("1.0")
@@ -2455,7 +2455,7 @@ func runGUI() {
 	window.SetResizable(false)
 	window.SetHasMaxButton(false)
 	window.SetFont(font)
-	window.SetTitle("UVB-76 Morse Code Broadcast Engine - The Buzzer")
+	window.SetTitle("The Hizzer")
 
 	// Input Labels and Edit Fields
 	lblMsg := wui.NewLabel()
@@ -3160,7 +3160,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 		isStreaming = true
 
 		btnStream.SetText("🛑 Stop Broadcasting")
-		lblStatus.SetText("Broadcasting with UVB-76 effects...")
+		lblStatus.SetText("Broadcasting...")
 
 		go func() {
 			for {
