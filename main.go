@@ -1487,7 +1487,9 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("no audio recording devices (microphone) detected on this system")
 		}
 		args = append(args, "-f", "dshow", "-i", "audio="+micDev)
-	} else if !isVid {
+	}
+
+	if !isVid {
 		args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
 	}
 
@@ -1497,11 +1499,36 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 		"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
 		"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
 		"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
-		"-af", "aresample=44100",
 	)
 
 	if cfg.UseLiveMic {
-		args = append(args, "-map", "0:v", "-map", "1:a")
+		if !isVid {
+			// Mix mic (Input 1) and pipe:0 (Input 2)
+			args = append(args,
+				"-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest,aresample=44100[a]",
+				"-map", "0:v", "-map", "[a]",
+			)
+		} else {
+			// Video background and live mic
+			// Map video (Input 0) and mic (Input 1)
+			args = append(args,
+				"-map", "0:v", "-map", "1:a",
+				"-af", "aresample=44100",
+			)
+		}
+	} else {
+		if !isVid {
+			// Map image (Input 0) and pipe:0 (Input 1)
+			args = append(args,
+				"-map", "0:v", "-map", "1:a",
+				"-af", "aresample=44100",
+			)
+		} else {
+			// Video background and no live mic, default map works or map 0:v and 0:a if present
+			args = append(args,
+				"-af", "aresample=44100",
+			)
+		}
 	}
 
 	if cfg.Duration > 0 {
@@ -1517,7 +1544,7 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	
-	if cfg.UseLiveMic || isVid {
+	if isVid {
 		if err := cmd.Start(); err != nil {
 			return err
 		}
