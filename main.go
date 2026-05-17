@@ -42,6 +42,7 @@ type AppConfig struct {
 	RTMPURL         string         `json:"rtmp_url"`
 	OutputFile      string         `json:"output_file"`
 	ExternalAudio   string         `json:"external_audio"`
+	ExternalAudio2   string        `json:"external_audio_2"`
 	Duration        int            `json:"duration"`
 	VisualizerMode  int            `json:"visualizer_mode"`
 }
@@ -173,6 +174,7 @@ type AudioProcessor struct {
 	BeepFrequency        float64 `json:"beep_frequency"`
 	BeepDotDuration      float64 `json:"beep_dot_duration"`
 	ExternalAudioVolume  float64 `json:"external_audio_volume"`
+	ExternalAudio2Volume float64 `json:"external_audio_2_volume"`
 }
 
 // --- Global State Variables ---
@@ -197,7 +199,15 @@ var (
 	waveformData   []float64
 	spectrumData   []float64
 	spectrumPeaks  []float64
-	visualizerMode = 0 // 0: Waveform, 1: Spectrum Analyzer
+	waterfallData  [][]float64
+	visualizerMode = 0 // 0: Waveform, 1: Spectrum Analyzer, 2: Waterfall Spectrogram
+	// Add after existing visualizerMode declaration
+	waterfallRows     = 120
+	waterfallBins     = 80
+	waterfallScroll   = 0
+	waveformDirty  = true
+	spectrumDirty  = true
+	waterfallDirty = true
 	zoomLevel      = 1.0
 	zoomOffset     = 0.0
 	isStreaming    = false
@@ -378,6 +388,18 @@ func (pc *PlaybackController) IsPaused() bool {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	return pc.isPaused
+}
+
+func (pc *PlaybackController) GetPlaybackProgress() float64 {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if !pc.isPlaying || pc.streamer == nil {
+		return 0.0
+	}
+	if len(pc.streamer.samples) == 0 {
+		return 0.0
+	}
+	return float64(pc.streamer.pos) / float64(len(pc.streamer.samples))
 }
 
 // --- UVB-76 Style Audio Processing Functions ---
@@ -1065,7 +1087,7 @@ func textToMorse(text string) string {
 	return strings.Join(morse, " ")
 }
 
-func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 {
+func generateAudioBuffers(morseCode string, externalAudioPath1 string, externalAudioPath2 string) []float64 {
 	freq := audioProc.BeepFrequency
 	if freq <= 0 {
 		freq = 800.0
@@ -1075,7 +1097,8 @@ func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 
 		dotDuration = 0.1
 	}
 	beepVol := audioProc.BeepVolume
-	externalVol := audioProc.ExternalAudioVolume
+	externalVol1 := audioProc.ExternalAudioVolume
+	externalVol2 := audioProc.ExternalAudio2Volume
 
 	dotSamples := int(float64(sampleRate) * dotDuration)
 	dashSamples := dotSamples * 3
@@ -1121,34 +1144,61 @@ func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 
 		morseSamples = append(morseSamples, generateSilence(dotSamples*7)...)
 	}
 
-	// Load external audio if provided
-	var externalSamples []float64
-	if externalAudioPath != "" {
-		if ext, err := loadExternalAudio(externalAudioPath); err == nil {
-			externalSamples = ext
-			for i := range externalSamples {
-				externalSamples[i] *= externalVol
+	// Load first external audio if provided
+	var externalSamples1 []float64
+	if externalAudioPath1 != "" {
+		if ext, err := loadExternalAudio(externalAudioPath1); err == nil {
+			externalSamples1 = ext
+			for i := range externalSamples1 {
+				externalSamples1[i] *= externalVol1
 			}
 		}
 	}
 
-	// Mix both signals
+	// Load second external audio if provided
+	var externalSamples2 []float64
+	if externalAudioPath2 != "" {
+		if ext, err := loadExternalAudio(externalAudioPath2); err == nil {
+			externalSamples2 = ext
+			for i := range externalSamples2 {
+				externalSamples2[i] *= externalVol2
+			}
+		}
+	}
+
+	// Mix all three signals
 	var mixed []float64
-	if len(morseSamples) > 0 && len(externalSamples) > 0 {
-		maxLen := len(morseSamples)
-		if len(externalSamples) > maxLen {
-			maxLen = len(externalSamples)
-		}
+	
+	// Find the maximum length among all audio sources
+	maxLen := len(morseSamples)
+	if len(externalSamples1) > maxLen {
+		maxLen = len(externalSamples1)
+	}
+	if len(externalSamples2) > maxLen {
+		maxLen = len(externalSamples2)
+	}
+	
+	if maxLen > 0 {
 		mixed = make([]float64, maxLen)
-		for i := 0; i < maxLen; i++ {
-			morseVal := morseSamples[i%len(morseSamples)]
-			externalVal := externalSamples[i%len(externalSamples)]
-			mixed[i] = morseVal + externalVal
+		
+		// Mix Morse code
+		for i := 0; i < maxLen && i < len(morseSamples); i++ {
+			mixed[i] += morseSamples[i]
 		}
-	} else if len(morseSamples) > 0 {
-		mixed = morseSamples
-	} else if len(externalSamples) > 0 {
-		mixed = externalSamples
+		
+		// Mix first external audio
+		if len(externalSamples1) > 0 {
+			for i := 0; i < maxLen; i++ {
+				mixed[i] += externalSamples1[i%len(externalSamples1)]
+			}
+		}
+		
+		// Mix second external audio
+		if len(externalSamples2) > 0 {
+			for i := 0; i < maxLen; i++ {
+				mixed[i] += externalSamples2[i%len(externalSamples2)]
+			}
+		}
 	}
 
 	// Apply audio processing chain
@@ -1222,6 +1272,12 @@ func computeSpectrum(samples []float64, numBins int) []float64 {
 		step = windowSize
 	}
 
+	// Pre-calculate the Hann window to save thousands of math.Cos calls
+	window := make([]float64, windowSize)
+	for n := 0; n < windowSize; n++ {
+		window[n] = 0.5 * (1.0 - math.Cos(2*math.Pi*float64(n)/float64(windowSize-1)))
+	}
+
 	count := 0
 	for start := 0; start+windowSize <= len(samples); start += step {
 		segment := samples[start : start+windowSize]
@@ -1232,17 +1288,20 @@ func computeSpectrum(samples []float64, numBins int) []float64 {
 			
 			realSum := 0.0
 			imagSum := 0.0
+			phaseStep := 2.0 * math.Pi * freq / float64(sampleRate)
+			phase := 0.0
+			
+			// Optimized inner loop
 			for n := 0; n < windowSize; n++ {
-				w := 0.5 * (1.0 - math.Cos(2*math.Pi*float64(n)/float64(windowSize-1)))
-				angle := 2.0 * math.Pi * freq * (float64(n) / float64(sampleRate))
-				realSum += segment[n] * w * math.Cos(angle)
-				imagSum += segment[n] * w * math.Sin(angle)
+				realSum += segment[n] * window[n] * math.Cos(phase)
+				imagSum += segment[n] * window[n] * math.Sin(phase)
+				phase += phaseStep
 			}
 			mag := math.Sqrt(realSum*realSum + imagSum*imagSum) / float64(windowSize)
 			bins[b] += mag
 		}
 		count++
-		if count > 200 { // limit CPU usage
+		if count > 200 { 
 			break
 		}
 	}
@@ -1258,6 +1317,127 @@ func computeSpectrum(samples []float64, numBins int) []float64 {
 	}
 
 	return bins
+}
+
+func computeWaterfall(samples []float64, numRows int, numBins int) [][]float64 {
+	waterfall := make([][]float64, numRows)
+	for i := range waterfall {
+		waterfall[i] = make([]float64, numBins)
+	}
+	if len(samples) == 0 {
+		return waterfall
+	}
+
+	samplesPerRow := sampleRate / 20 // 50ms per row
+	totalRows := len(samples) / samplesPerRow
+	if totalRows < numRows {
+		totalRows = numRows
+	}
+
+	// Pre-calculate Hann window up to max expected size
+	maxWinSize := 1024
+	window := make([]float64, maxWinSize)
+	for n := 0; n < maxWinSize; n++ {
+		window[n] = 0.5 * (1.0 - math.Cos(2*math.Pi*float64(n)/float64(maxWinSize-1)))
+	}
+
+	for r := 0; r < numRows && r < totalRows; r++ {
+		sourceRow := totalRows - numRows + r
+		if sourceRow < 0 {
+			continue
+		}
+		
+		start := sourceRow * samplesPerRow
+		end := start + samplesPerRow
+		if end > len(samples) {
+			end = len(samples)
+		}
+		if start >= len(samples) {
+			break
+		}
+
+		segment := samples[start:end]
+		winSize := len(segment)
+		if winSize == 0 {
+			continue
+		}
+		if winSize > maxWinSize {
+			winSize = maxWinSize
+		}
+
+		for b := 0; b < numBins; b++ {
+			minFreq := 20.0
+			maxFreq := 12000.0
+			freq := minFreq * math.Pow(maxFreq/minFreq, float64(b)/float64(numBins))
+
+			realSum := 0.0
+			imagSum := 0.0
+			phaseStep := 2.0 * math.Pi * freq / float64(sampleRate)
+			phase := 0.0
+			
+			// Optimized inner loop
+			for n := 0; n < winSize; n++ {
+				realSum += segment[n] * window[n] * math.Cos(phase)
+				imagSum += segment[n] * window[n] * math.Sin(phase)
+				phase += phaseStep
+			}
+			
+			mag := math.Sqrt(realSum*realSum+imagSum*imagSum) / float64(winSize)
+			val := math.Log10(1.0 + mag*80.0)
+			if val > 1.0 { val = 1.0 }
+			if val < 0 { val = 0 }
+			waterfall[r][b] = val
+		}
+	}
+	
+	return waterfall
+}
+
+func getWaterfallColor(v float64) wui.Color {
+	if v < 0 {
+		v = 0
+	} else if v > 1 {
+		v = 1
+	}
+
+	var r, g, b uint8
+	
+	// Enhanced color map for better visibility
+	// Black -> Blue -> Cyan -> Green -> Yellow -> Red -> White
+	switch {
+	case v < 0.1:
+		// Very dark blue to black
+		pct := v / 0.1
+		r = uint8(0)
+		g = uint8(0)
+		b = uint8(20 + pct*35)
+	case v < 0.25:
+		// Blue to cyan
+		pct := (v - 0.1) / 0.15
+		r = uint8(0)
+		g = uint8(pct * 150)
+		b = uint8(55 + pct*200)
+	case v < 0.5:
+		// Cyan to green
+		pct := (v - 0.25) / 0.25
+		r = uint8(pct * 80)
+		g = uint8(150 + pct*105)
+		b = uint8(255 - pct*255)
+	case v < 0.75:
+		// Green to yellow
+		pct := (v - 0.5) / 0.25
+		r = uint8(80 + pct*175)
+		g = uint8(255)
+		b = uint8(0)
+	default:
+		// Yellow to red to white
+		pct := (v - 0.75) / 0.25
+		r = uint8(255)
+		g = uint8(255 - pct*255)
+		b = uint8(pct * 200)
+	}
+	
+	return wui.RGB(r, g, b)
 }
 
 // --- Media Pipeline Control Engine ---
@@ -1743,6 +1923,16 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	txtExtVol.SetBounds(400, 422, 70, 22)
 	txtExtVol.SetText(fmt.Sprintf("%.2f", audioProc.ExternalAudioVolume))
 	settingsWin.Add(txtExtVol)
+	
+	lblExtVol2 := wui.NewLabel()
+	lblExtVol2.SetBounds(260, 450, 130, 20)
+	lblExtVol2.SetText("Ext Audio 2 Vol:")
+	settingsWin.Add(lblExtVol2)
+
+	txtExtVol2 := wui.NewEditLine()
+	txtExtVol2.SetBounds(400, 448, 70, 22)
+	txtExtVol2.SetText(fmt.Sprintf("%.2f", audioProc.ExternalAudio2Volume))
+	settingsWin.Add(txtExtVol2)
 
 
 	// Column 3: Space & Time FX (X: 500 to 720)
@@ -1966,6 +2156,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtBeepVol.SetText("0.80")
 		txtBeepDur.SetText("0.10")
 		txtExtVol.SetText("0.80")
+		txtExtVol2.SetText("0.80")
 	})
 
 	btnRadio.SetOnClick(func() {
@@ -2028,6 +2219,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtBeepVol.SetText("0.60")
 		txtBeepDur.SetText("0.08")
 		txtExtVol.SetText("0.50")
+		txtExtVol2.SetText("0.50")
 	})
 
 	btnLoFi.SetOnClick(func() {
@@ -2092,6 +2284,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtBeepVol.SetText("0.70")
 		txtBeepDur.SetText("0.15")
 		txtExtVol.SetText("0.90")
+		txtExtVol2.SetText("0.90")
 	})
 
 	btnClean.SetOnClick(func() {
@@ -2154,6 +2347,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtBeepVol.SetText("1.00")
 		txtBeepDur.SetText("0.10")
 		txtExtVol.SetText("1.00")
+		txtExtVol2.SetText("1.00")
 	})
 
 	sepFooter := wui.NewLabel()
@@ -2162,7 +2356,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	settingsWin.Add(sepFooter)
 
 	btnClose := wui.NewButton()
-	btnClose.SetBounds(415, 452, 120, 30)
+	btnClose.SetBounds(10, 452, 120, 30)
 	btnClose.SetText("Apply & Close")
 	settingsWin.Add(btnClose)
 
@@ -2236,6 +2430,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		audioProc.BeepVolume, _ = strconv.ParseFloat(txtBeepVol.Text(), 64)
 		audioProc.BeepDotDuration, _ = strconv.ParseFloat(txtBeepDur.Text(), 64)
 		audioProc.ExternalAudioVolume, _ = strconv.ParseFloat(txtExtVol.Text(), 64)
+		audioProc.ExternalAudio2Volume, _ = strconv.ParseFloat(txtExtVol2.Text(), 64)
 
 		settingsWin.Close()
 	})
@@ -2327,6 +2522,31 @@ func runGUI() {
 			txtExternalAudio.SetText(path)
 		}
 	})
+	
+	lblExternalAudio2 := wui.NewLabel()
+	lblExternalAudio2.SetBounds(20, 105, 110, 20)
+	lblExternalAudio2.SetText("Secondary Audio:")
+	window.Add(lblExternalAudio2)
+
+	txtExternalAudio2 := wui.NewEditLine()
+	txtExternalAudio2.SetBounds(140, 103, 260, 24)
+	txtExternalAudio2.SetText(appCfg.ExternalAudio2)
+	window.Add(txtExternalAudio2)
+
+	btnBrowseAudio2 := wui.NewButton()
+	btnBrowseAudio2.SetBounds(405, 102, 65, 26)
+	btnBrowseAudio2.SetText("Browse")
+	window.Add(btnBrowseAudio2)
+
+	btnBrowseAudio2.SetOnClick(func() {
+		openDlg := wui.NewFileOpenDialog()
+		openDlg.SetTitle("Open Secondary WAV Audio File")
+		openDlg.AddFilter("WAV Audio Files", "wav")
+		ok, path := openDlg.ExecuteSingleSelection(window)
+		if ok {
+			txtExternalAudio2.SetText(path)
+		}
+	})
 
 	lblDur := wui.NewLabel()
 	lblDur.SetBounds(500, 75, 100, 20)
@@ -2412,11 +2632,63 @@ func runGUI() {
 		}()
 	}
 
-	audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpace(txtExternalAudio.Text()))
-	waveformData = computeWaveform(audioSamples, paintBox.Width())
-	spectrumData = computeSpectrum(audioSamples, 60)
-	spectrumPeaks = make([]float64, 60)
-	copy(spectrumPeaks, spectrumData)
+// Smart updater: Only calculates the active visualizer, and does it in a background thread
+	refreshVisualizer := func() {
+		mode := visualizerMode
+		w := paintBox.Width()
+		
+		go func() {
+			audioMutex.RLock()
+			samples := audioSamples
+			audioMutex.RUnlock()
+
+			if len(samples) == 0 {
+				return
+			}
+
+			needRepaint := false
+
+			if mode == 0 && waveformDirty {
+				wf := computeWaveform(samples, w)
+				audioMutex.Lock()
+				waveformData = wf
+				waveformDirty = false
+				audioMutex.Unlock()
+				needRepaint = true
+			} else if mode == 1 && spectrumDirty {
+				sp := computeSpectrum(samples, 60)
+				audioMutex.Lock()
+				spectrumData = sp
+				spectrumPeaks = make([]float64, 60)
+				copy(spectrumPeaks, sp)
+				spectrumDirty = false
+				audioMutex.Unlock()
+				needRepaint = true
+			} else if mode == 2 && waterfallDirty {
+				wf := computeWaterfall(samples, waterfallRows, waterfallBins)
+				audioMutex.Lock()
+				waterfallData = wf
+				waterfallDirty = false
+				audioMutex.Unlock()
+				needRepaint = true
+			}
+
+			if needRepaint {
+				updateUI(func() { paintBox.Paint() })
+			}
+		}()
+	}
+
+audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpace(txtExternalAudio.Text()), strings.TrimSpace(txtExternalAudio2.Text()))
+	// waveformData = computeWaveform(audioSamples, paintBox.Width())
+	// spectrumData = computeSpectrum(audioSamples, 60)
+	// waterfallData = computeWaterfall(audioSamples, waterfallRows, waterfallBins)
+	// spectrumPeaks = make([]float64, 60)
+	// copy(spectrumPeaks, spectrumData)
+	waveformDirty = true
+	spectrumDirty = true
+	waterfallDirty = true
+	refreshVisualizer() // Kick off the smart calculation
 
 	btnGenerate.SetOnClick(func() {
 		btnGenerate.SetEnabled(false)
@@ -2424,7 +2696,7 @@ func runGUI() {
 		
 		go func() {
 			morseStr := textToMorse(txtMsg.Text())
-			newSamples := generateAudioBuffers(morseStr, strings.TrimSpace(txtExternalAudio.Text()))
+			newSamples := generateAudioBuffers(morseStr, strings.TrimSpace(txtExternalAudio.Text()), strings.TrimSpace(txtExternalAudio2.Text()))
 			
 			updateUI(func() {
 				audioMutex.Lock()
@@ -2432,16 +2704,30 @@ func runGUI() {
 				if chkLiveUpdate.Checked() {
 					audioVersion++
 				}
+				
+				// 1. Force clear the active visualizer data to trigger the "Generating..." loading text
+				if visualizerMode == 0 {
+					waveformData = nil
+				} else if visualizerMode == 1 {
+					spectrumData = nil
+				} else if visualizerMode == 2 {
+					waterfallData = nil
+				}
+				
+				// 2. Mark all visualizers as needing recalculation
+				waveformDirty = true
+				spectrumDirty = true
+				waterfallDirty = true
 				audioMutex.Unlock()
 				
-				zoomOffset = 0
-				waveformData = computeWaveform(audioSamples, paintBox.Width())
-				spectrumData = computeSpectrum(audioSamples, 60)
-				spectrumPeaks = make([]float64, 60)
-				copy(spectrumPeaks, spectrumData)
+				// 3. Paint immediately to show the blank / loading state
 				paintBox.Paint()
+				
+				// 4. Kick off the background calculation (it will repaint when finished)
+				refreshVisualizer() 
+
 				btnGenerate.SetEnabled(true)
-				lblStatus.SetText(fmt.Sprintf("Audio generated with effects. Total duration: %.2f seconds", float64(len(audioSamples))/float64(sampleRate)))
+				lblStatus.SetText("Audio generated. Total duration: " + fmt.Sprintf("%.2f", float64(len(audioSamples))/float64(sampleRate)) + " seconds")
 
 				var durSec int
 				fmt.Sscanf(txtDur.Text(), "%d", &durSec)
@@ -2452,6 +2738,7 @@ func runGUI() {
 					RTMPURL:         txtRtmp.Text(),
 					OutputFile:      txtOut.Text(),
 					ExternalAudio:   txtExternalAudio.Text(),
+					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
 				})
@@ -2466,7 +2753,7 @@ func runGUI() {
 		
 		go func() {
 			morseStr := textToMorse(txtMsg.Text())
-			newSamples := generateAudioBuffers(morseStr, strings.TrimSpace(txtExternalAudio.Text()))
+			newSamples := generateAudioBuffers(morseStr, strings.TrimSpace(txtExternalAudio.Text()), strings.TrimSpace(txtExternalAudio2.Text()))
 			
 			updateUI(func() {
 				audioMutex.Lock()
@@ -2474,15 +2761,30 @@ func runGUI() {
 				if chkLiveUpdate.Checked() {
 					audioVersion++
 				}
+				
+				// 1. Force clear the active visualizer data to trigger the "Generating..." loading text
+				if visualizerMode == 0 {
+					waveformData = nil
+				} else if visualizerMode == 1 {
+					spectrumData = nil
+				} else if visualizerMode == 2 {
+					waterfallData = nil
+				}
+				
+				// 2. Mark all visualizers as needing recalculation
+				waveformDirty = true
+				spectrumDirty = true
+				waterfallDirty = true
 				audioMutex.Unlock()
 				
-				waveformData = computeWaveform(audioSamples, paintBox.Width())
-				spectrumData = computeSpectrum(audioSamples, 60)
-				spectrumPeaks = make([]float64, 60)
-				copy(spectrumPeaks, spectrumData)
+				// 3. Paint immediately to show the blank / loading state
 				paintBox.Paint()
+				
+				// 4. Kick off the background calculation (it will repaint when finished)
+				refreshVisualizer() 
+
 				btnGenerate.SetEnabled(true)
-				lblStatus.SetText("Audio settings applied. Regenerated with new effects.")
+				lblStatus.SetText("Audio generated. Total duration: " + fmt.Sprintf("%.2f", float64(len(audioSamples))/float64(sampleRate)) + " seconds")
 
 				var durSec int
 				fmt.Sscanf(txtDur.Text(), "%d", &durSec)
@@ -2493,6 +2795,7 @@ func runGUI() {
 					RTMPURL:         txtRtmp.Text(),
 					OutputFile:      txtOut.Text(),
 					ExternalAudio:   txtExternalAudio.Text(),
+					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
 				})
@@ -2505,6 +2808,7 @@ func runGUI() {
 		canvas.FillRect(0, 0, w, h, wui.RGB(8, 12, 18))
 
 		if visualizerMode == 0 {
+			// Waveform mode
 			centerY := h / 2
 			audioMutex.RLock()
 			currentWaveform := waveformData
@@ -2538,16 +2842,8 @@ func runGUI() {
 				color := wui.RGB(uint8(amp/3), uint8(200-amp/4), uint8(amp/2))
 				canvas.Line(x1, y1, x2, y2, color)
 			}
-
-			startBarX := int(zoomOffset)
-			endBarX := int(float64(w)*zoomLevel + zoomOffset)
-			if startBarX >= 0 && startBarX < w {
-				canvas.Line(startBarX, 0, startBarX, h, wui.RGB(255, 100, 50))
-			}
-			if endBarX >= 0 && endBarX < w {
-				canvas.Line(endBarX, 0, endBarX, h, wui.RGB(255, 100, 50))
-			}
-		} else {
+		} else if visualizerMode == 1 {
+			// Spectrum analyzer mode (existing)
 			audioMutex.RLock()
 			currentSpectrum := spectrumData
 			currentPeaks := spectrumPeaks
@@ -2563,7 +2859,7 @@ func runGUI() {
 			for idx, lvl := range dbLevels {
 				gy := h - int(lvl*float64(h-40)) - 20
 				canvas.Line(0, gy, w, gy, wui.RGB(20, 28, 40))
-				canvas.TextOut(10, gy - 12, dbLabels[idx], wui.RGB(80, 100, 130))
+				canvas.TextOut(10, gy-12, dbLabels[idx], wui.RGB(80, 100, 130))
 			}
 
 			// Draw frequency bands
@@ -2580,7 +2876,7 @@ func runGUI() {
 			for _, fl := range freqLabels {
 				fx := int(fl.xPct * float64(w))
 				canvas.Line(fx, 0, fx, h-20, wui.RGB(20, 28, 40))
-				canvas.TextOut(fx - 15, h - 18, fl.val, wui.RGB(80, 100, 130))
+				canvas.TextOut(fx-15, h-18, fl.val, wui.RGB(80, 100, 130))
 			}
 
 			// Draw spectrum bars
@@ -2595,13 +2891,13 @@ func runGUI() {
 				}
 				bx := 20 + i*(barWidth+spacing)
 
-				// Draw a stunning neon blue/cyan/purple gradient bar
+				// Draw gradient bar
 				for j := 0; j < barHeight; j++ {
 					pct := float64(j) / float64(h-60)
 					r := uint8(255 * pct)
 					g := uint8(100 + 155*(1.0-pct))
 					b := uint8(255)
-					canvas.FillRect(bx, h - 25 - j, bx+barWidth, h - 25 - j + 1, wui.RGB(r, g, b))
+					canvas.FillRect(bx, h-25-j, bx+barWidth, h-25-j+1, wui.RGB(r, g, b))
 				}
 
 				// Draw peak hold dot
@@ -2615,6 +2911,82 @@ func runGUI() {
 					currentPeaks[i] = currentSpectrum[i]
 				}
 			}
+		} else if visualizerMode == 2 {
+			// Waterfall spectrogram mode
+			audioMutex.RLock()
+			currentWaterfall := waterfallData
+			audioMutex.RUnlock()
+
+			if len(currentWaterfall) == 0 {
+				canvas.TextOut(w/2-100, h/2, "Generating waterfall data...", wui.RGB(150, 150, 150))
+				return
+			}
+
+			// Draw waterfall visualization
+			rowHeight := float64(h) / float64(len(currentWaterfall))
+			
+			for r := 0; r < len(currentWaterfall); r++ {
+				y1 := int(float64(r) * rowHeight)
+				y2 := int(float64(r+1) * rowHeight)
+				if y2 > h {
+					y2 = h
+				}
+				
+				row := currentWaterfall[r]
+				binWidth := float64(w) / float64(len(row))
+				
+				for b := 0; b < len(row); b++ {
+					x1 := int(float64(b) * binWidth)
+					x2 := int(float64(b+1) * binWidth)
+					if x2 > w {
+						x2 = w
+					}
+					
+					color := getWaterfallColor(row[b])
+					canvas.FillRect(x1, y1, x2, y2, color)
+				}
+			}
+			
+			// Draw frequency labels on the top
+			freqPositions := []struct {
+				freq string
+				bin  int
+			}{
+				{"50", 2},
+				{"100", 4},
+				{"500", 10},
+				{"1k", 20},
+				{"2k", 30},
+				{"5k", 45},
+				{"10k", 65},
+			}
+			
+			for _, fp := range freqPositions {
+				if fp.bin < waterfallBins {
+					x := int(float64(fp.bin) * float64(w) / float64(waterfallBins))
+					canvas.TextOut(x-15, 2, fp.freq, wui.RGB(200, 200, 200))
+				}
+			}
+			
+			// Draw time labels on the right
+			timeLabels := []struct {
+				label string
+				row   int
+			}{
+				{"Now", 0},
+				{"-1s", waterfallRows / 4},
+				{"-2s", waterfallRows / 2},
+				{"-3s", 3 * waterfallRows / 4},
+			}
+			
+			for _, tl := range timeLabels {
+				if tl.row < len(currentWaterfall) {
+					y := int(float64(tl.row) * rowHeight)
+					if y+15 < h {
+						canvas.TextOut(w-40, y, tl.label, wui.RGB(150, 150, 150))
+					}
+				}
+			}
 		}
 	})
 
@@ -2622,12 +2994,17 @@ func runGUI() {
 		if visualizerMode == 0 {
 			visualizerMode = 1
 			btnVisMode.SetText("📊 Spectrum Mode")
+		} else if visualizerMode == 1 {
+			visualizerMode = 2
+			btnVisMode.SetText("🌊 Waterfall Mode")
 		} else {
 			visualizerMode = 0
 			btnVisMode.SetText("📈 Waveform Mode")
 		}
-		paintBox.Paint()
-
+		
+		paintBox.Paint()      // Repaint immediately to clear old visualizer
+		refreshVisualizer()   // Calculate the new visualizer if it's dirty
+		
 		var durSec int
 		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
 		saveConfig(AppConfig{
@@ -2637,6 +3014,7 @@ func runGUI() {
 			RTMPURL:         txtRtmp.Text(),
 			OutputFile:      txtOut.Text(),
 			ExternalAudio:   txtExternalAudio.Text(),
+			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
 		})
@@ -2647,17 +3025,8 @@ func runGUI() {
 		if zoomLevel > 20 {
 			zoomLevel = 20
 		}
-		waveformData = computeWaveform(audioSamples, paintBox.Width())
-		paintBox.Paint()
-	})
-
-	btnZoomOut.SetOnClick(func() {
-		zoomLevel /= 1.3
-		if zoomLevel < 1.0 {
-			zoomLevel = 1.0
-		}
-		waveformData = computeWaveform(audioSamples, paintBox.Width())
-		paintBox.Paint()
+		waveformDirty = true
+		refreshVisualizer()
 	})
 
 	btnResetZoom.SetOnClick(func() {
@@ -2757,6 +3126,7 @@ func runGUI() {
 			RTMPURL:         txtRtmp.Text(),
 			OutputFile:      txtOut.Text(),
 			ExternalAudio:   txtExternalAudio.Text(),
+			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
 		})

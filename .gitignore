@@ -1,3 +1,5 @@
 test/
 *.exe
 hizzer.config.json
+cli/main.exe
+cli/hizzer.exe
