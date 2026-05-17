@@ -1440,20 +1440,43 @@ func getWaterfallColor(v float64) wui.Color {
 	return wui.RGB(r, g, b)
 }
 
+func isVideoFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp":
+		return true
+	}
+	return false
+}
+
 // --- Media Pipeline Control Engine ---
 
 func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	var args []string
-	args = append(args, "-re", "-loop", "1", "-i", cfg.BackgroundImage)
-	args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
-	args = append(args,
-		"-c:v", "libx264", "-preset", "veryfast",
-		"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
-		"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
-		"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
-		"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
-		"-af", "aresample=44100",
-	)
+	
+	isVid := isVideoFile(cfg.BackgroundImage)
+	if isVid {
+		args = append(args, "-re", "-stream_loop", "-1", "-i", cfg.BackgroundImage)
+		args = append(args,
+			"-c:v", "libx264", "-preset", "veryfast",
+			"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
+			"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
+			"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
+			"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
+			"-af", "aresample=44100",
+		)
+	} else {
+		args = append(args, "-re", "-loop", "1", "-i", cfg.BackgroundImage)
+		args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
+		args = append(args,
+			"-c:v", "libx264", "-preset", "veryfast",
+			"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
+			"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
+			"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
+			"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
+			"-af", "aresample=44100",
+		)
+	}
 
 	if cfg.Duration > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", cfg.Duration))
@@ -1468,6 +1491,13 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	
+	if isVid {
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		return cmd.Wait()
+	}
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -2470,13 +2500,30 @@ func runGUI() {
 
 	lblBg := wui.NewLabel()
 	lblBg.SetBounds(20, 45, 110, 20)
-	lblBg.SetText("Background Image:")
+	lblBg.SetText("Background Src:")
 	window.Add(lblBg)
 
 	txtBg := wui.NewEditLine()
-	txtBg.SetBounds(140, 43, 330, 24)
+	txtBg.SetBounds(140, 43, 260, 24)
 	txtBg.SetText(appCfg.BackgroundImage)
 	window.Add(txtBg)
+
+	btnBrowseBg := wui.NewButton()
+	btnBrowseBg.SetBounds(405, 42, 65, 26)
+	btnBrowseBg.SetText("Browse")
+	window.Add(btnBrowseBg)
+
+	btnBrowseBg.SetOnClick(func() {
+		openDlg := wui.NewFileOpenDialog()
+		openDlg.SetTitle("Open Background Image or Video")
+		openDlg.AddFilter("All Supported Files", "jpg", "jpeg", "png", "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v")
+		openDlg.AddFilter("Images (PNG, JPG)", "jpg", "jpeg", "png")
+		openDlg.AddFilter("Videos (MP4, MKV, AVI, etc.)", "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v")
+		ok, path := openDlg.ExecuteSingleSelection(window)
+		if ok {
+			txtBg.SetText(path)
+		}
+	})
 
 	lblRtmp := wui.NewLabel()
 	lblRtmp.SetBounds(500, 15, 100, 20)
