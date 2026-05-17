@@ -33,6 +33,7 @@ type Config struct {
 	AudioBitrate    string
 	Duration        int
 	OutputFile      string
+	UseLiveMic      bool
 }
 
 type AppConfig struct {
@@ -42,9 +43,10 @@ type AppConfig struct {
 	RTMPURL         string         `json:"rtmp_url"`
 	OutputFile      string         `json:"output_file"`
 	ExternalAudio   string         `json:"external_audio"`
-	ExternalAudio2   string        `json:"external_audio_2"`
+	ExternalAudio2  string         `json:"external_audio_2"`
 	Duration        int            `json:"duration"`
 	VisualizerMode  int            `json:"visualizer_mode"`
+	UseLiveMic      bool           `json:"use_live_mic"`
 }
 
 func getConfigPath() string {
@@ -1449,6 +1451,24 @@ func isVideoFile(path string) bool {
 	return false
 }
 
+func getDefaultDshowAudioDevice() string {
+	cmd := exec.Command("ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy")
+	out, _ := cmd.CombinedOutput()
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "(audio)") {
+			firstQuote := strings.Index(line, "\"")
+			if firstQuote != -1 {
+				lastQuote := strings.Index(line[firstQuote+1:], "\"")
+				if lastQuote != -1 {
+					return line[firstQuote+1 : firstQuote+1+lastQuote]
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // --- Media Pipeline Control Engine ---
 
 func executeStreamPipeline(ctx context.Context, cfg Config) error {
@@ -1457,25 +1477,31 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	isVid := isVideoFile(cfg.BackgroundImage)
 	if isVid {
 		args = append(args, "-re", "-stream_loop", "-1", "-i", cfg.BackgroundImage)
-		args = append(args,
-			"-c:v", "libx264", "-preset", "veryfast",
-			"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
-			"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
-			"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
-			"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
-			"-af", "aresample=44100",
-		)
 	} else {
 		args = append(args, "-re", "-loop", "1", "-i", cfg.BackgroundImage)
+	}
+
+	if cfg.UseLiveMic {
+		micDev := getDefaultDshowAudioDevice()
+		if micDev == "" {
+			return fmt.Errorf("no audio recording devices (microphone) detected on this system")
+		}
+		args = append(args, "-f", "dshow", "-i", "audio="+micDev)
+	} else if !isVid {
 		args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
-		args = append(args,
-			"-c:v", "libx264", "-preset", "veryfast",
-			"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
-			"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
-			"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
-			"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
-			"-af", "aresample=44100",
-		)
+	}
+
+	args = append(args,
+		"-c:v", "libx264", "-preset", "veryfast",
+		"-b:v", cfg.VideoBitrate, "-maxrate", cfg.VideoBitrate, "-bufsize", "6000k",
+		"-pix_fmt", "yuv420p", "-g", "60", "-r", fmt.Sprintf("%d", cfg.FPS),
+		"-c:a", "aac", "-b:a", cfg.AudioBitrate, "-ar", "44100",
+		"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
+		"-af", "aresample=44100",
+	)
+
+	if cfg.UseLiveMic {
+		args = append(args, "-map", "0:v", "-map", "1:a")
 	}
 
 	if cfg.Duration > 0 {
@@ -1491,7 +1517,7 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	
-	if isVid {
+	if cfg.UseLiveMic || isVid {
 		if err := cmd.Start(); err != nil {
 			return err
 		}
@@ -2551,12 +2577,12 @@ func runGUI() {
 	window.Add(lblExternalAudio)
 
 	txtExternalAudio := wui.NewEditLine()
-	txtExternalAudio.SetBounds(140, 73, 260, 24)
+	txtExternalAudio.SetBounds(140, 73, 190, 24)
 	txtExternalAudio.SetText(appCfg.ExternalAudio)
 	window.Add(txtExternalAudio)
 
 	btnBrowseAudio := wui.NewButton()
-	btnBrowseAudio.SetBounds(405, 72, 65, 26)
+	btnBrowseAudio.SetBounds(335, 72, 65, 26)
 	btnBrowseAudio.SetText("Browse")
 	window.Add(btnBrowseAudio)
 
@@ -2569,6 +2595,12 @@ func runGUI() {
 			txtExternalAudio.SetText(path)
 		}
 	})
+
+	btnRecordMic := wui.NewButton()
+	btnRecordMic.SetBounds(405, 72, 65, 26)
+	btnRecordMic.SetText("Record")
+	window.Add(btnRecordMic)
+
 	
 	lblExternalAudio2 := wui.NewLabel()
 	lblExternalAudio2.SetBounds(20, 105, 110, 20)
@@ -2606,10 +2638,16 @@ func runGUI() {
 	window.Add(txtDur)
 
 	chkLiveUpdate := wui.NewCheckBox()
-	chkLiveUpdate.SetBounds(710, 74, 150, 22)
-	chkLiveUpdate.SetText("Live Update Stream")
+	chkLiveUpdate.SetBounds(700, 74, 120, 22)
+	chkLiveUpdate.SetText("Live Update")
 	chkLiveUpdate.SetChecked(true)
 	window.Add(chkLiveUpdate)
+
+	chkLiveMic := wui.NewCheckBox()
+	chkLiveMic.SetBounds(825, 74, 105, 22)
+	chkLiveMic.SetText("Live Mic")
+	chkLiveMic.SetChecked(appCfg.UseLiveMic)
+	window.Add(chkLiveMic)
 
 	btnGenerate := wui.NewButton()
 	btnGenerate.SetBounds(500, 103, 180, 26)
@@ -2737,7 +2775,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 	waterfallDirty = true
 	refreshVisualizer() // Kick off the smart calculation
 
-	btnGenerate.SetOnClick(func() {
+	generateAudio := func() {
 		btnGenerate.SetEnabled(false)
 		lblStatus.SetText("Generating audio with effects... Please wait.")
 		
@@ -2788,10 +2826,13 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
+					UseLiveMic:      chkLiveMic.Checked(),
 				})
 			})
 		}()
-	})
+	}
+
+	btnGenerate.SetOnClick(generateAudio)
 
 	btnAudioSettings.SetOnClick(func() {
 		showAudioSettingsDialog(window)
@@ -2845,6 +2886,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
+					UseLiveMic:      chkLiveMic.Checked(),
 				})
 			})
 		}()
@@ -3064,6 +3106,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
+			UseLiveMic:      chkLiveMic.Checked(),
 		})
 	})
 
@@ -3176,6 +3219,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
+			UseLiveMic:      chkLiveMic.Checked(),
 		})
 
 		if _, err := os.Stat(bgPath); os.IsNotExist(err) {
@@ -3195,6 +3239,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			AudioBitrate:    "128k",
 			Duration:        durSec,
 			OutputFile:      strings.TrimSpace(txtOut.Text()),
+			UseLiveMic:      chkLiveMic.Checked(),
 		}
 
 		if cfg.RTMPURL == "" && cfg.OutputFile == "" {
@@ -3256,6 +3301,133 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 				}
 			}
 		}()
+	})
+
+	btnRecordMic.SetOnClick(func() {
+		if playbackController.IsPlaying() {
+			playbackController.Stop()
+			btnPlayPause.SetText("▶ Play")
+			btnStop.SetEnabled(false)
+		}
+
+		recordWin := wui.NewWindow()
+		recordWin.SetTitle("Recording Voice...")
+		recordWin.SetInnerWidth(300)
+		recordWin.SetInnerHeight(150)
+		recordWin.SetResizable(false)
+		recordWin.SetHasMaxButton(false)
+		recordWin.SetFont(font)
+		recordWin.SetInnerPosition(window.X()+300, window.Y()+150)
+
+		lblRecStatus := wui.NewLabel()
+		lblRecStatus.SetBounds(20, 20, 260, 25)
+		lblRecStatus.SetText("● RECORDING LIVE VOICE")
+		recordWin.Add(lblRecStatus)
+
+		lblRecTimer := wui.NewLabel()
+		lblRecTimer.SetBounds(20, 50, 260, 25)
+		lblRecTimer.SetText("Duration: 0.0s")
+		recordWin.Add(lblRecTimer)
+
+		btnStopRec := wui.NewButton()
+		btnStopRec.SetBounds(20, 85, 260, 30)
+		btnStopRec.SetText("⏹ Stop & Save")
+		recordWin.Add(btnStopRec)
+
+		recCtx, recCancel := context.WithCancel(context.Background())
+		micDev := getDefaultDshowAudioDevice()
+		if micDev == "" {
+			wui.MessageBoxError("Error", "No audio recording devices (microphone) detected on this system.")
+			recCancel()
+			return
+		}
+		cmd := exec.CommandContext(recCtx, "ffmpeg", "-f", "dshow", "-i", "audio="+micDev, "-y", "mic_record.wav")
+		
+		stdinPipe, err := cmd.StdinPipe()
+		if err != nil {
+			wui.MessageBoxError("Error", "Failed to create stdin pipe for recorder: " + err.Error())
+			recCancel()
+			return
+		}
+
+		err = cmd.Start()
+		if err != nil {
+			wui.MessageBoxError("Error", "Failed to start live voice recording: " + err.Error())
+			recCancel()
+			return
+		}
+
+		startTime := time.Now()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		pulseState := true
+
+		go func() {
+			for {
+				select {
+				case <-recCtx.Done():
+					ticker.Stop()
+					return
+				case <-ticker.C:
+					elapsed := time.Since(startTime).Seconds()
+					updateUI(func() {
+						lblRecTimer.SetText(fmt.Sprintf("Duration: %.1fs", elapsed))
+						if pulseState {
+							lblRecStatus.SetText("  RECORDING LIVE VOICE")
+						} else {
+							lblRecStatus.SetText("● RECORDING LIVE VOICE")
+						}
+						pulseState = !pulseState
+					})
+				}
+			}
+		}()
+
+		finalizeRecording := func() {
+			if stdinPipe != nil {
+				_, _ = stdinPipe.Write([]byte("q\n"))
+				_ = stdinPipe.Close()
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.Wait()
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				recCancel()
+			}
+
+			ticker.Stop()
+			time.Sleep(100 * time.Millisecond)
+
+			updateUI(func() {
+				recordWin.Close()
+				if _, err := os.Stat("mic_record.wav"); err == nil {
+					txtExternalAudio.SetText("mic_record.wav")
+					lblStatus.SetText("Successfully recorded microphone! Loaded into External Audio.")
+					generateAudio()
+				} else {
+					lblStatus.SetText("Recording ended, but audio file could not be generated.")
+				}
+			})
+		}
+
+		btnStopRec.SetOnClick(func() {
+			finalizeRecording()
+		})
+
+		go func() {
+			select {
+			case <-recCtx.Done():
+				return
+			case <-time.After(120 * time.Second):
+				finalizeRecording()
+			}
+		}()
+
+		recordWin.ShowModal()
 	})
 
 	window.Show()

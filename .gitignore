@@ -3,3 +3,4 @@ test/
 hizzer.config.json
 cli/main.exe
 cli/hizzer.exe
+mic_record.wav
