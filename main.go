@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,80 +35,144 @@ type Config struct {
 	OutputFile      string
 }
 
+type AppConfig struct {
+	Processor       AudioProcessor `json:"processor"`
+	MorseMessage    string         `json:"morse_message"`
+	BackgroundImage string         `json:"background_image"`
+	RTMPURL         string         `json:"rtmp_url"`
+	OutputFile      string         `json:"output_file"`
+	ExternalAudio   string         `json:"external_audio"`
+	Duration        int            `json:"duration"`
+	VisualizerMode  int            `json:"visualizer_mode"`
+}
+
+func getConfigPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "hizzer.config.json"
+	}
+	dir := filepath.Dir(exePath)
+	name := filepath.Base(exePath)
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	return filepath.Join(dir, base+".config.json")
+}
+
+func loadConfig() AppConfig {
+	path := getConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    "CQ CQ DE UVB-76",
+			BackgroundImage: "background.jpg",
+			RTMPURL:         "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY",
+			Duration:        0,
+			VisualizerMode:  0,
+		}
+	}
+	var cfg AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    "CQ CQ DE UVB-76",
+			BackgroundImage: "background.jpg",
+			RTMPURL:         "rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY",
+			Duration:        0,
+			VisualizerMode:  0,
+		}
+	}
+	return cfg
+}
+
+func saveConfig(cfg AppConfig) {
+	path := getConfigPath()
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(path, data, 0644)
+	}
+}
+
 // --- Audio Processing Parameters ---
 
 type AudioProcessor struct {
 	// UVB-76 specific parameters
-	BuzzerEnabled     bool
-	BuzzerFrequency   float64 // 4625 Hz typical UVB-76 carrier
-	BuzzerPulseRate   float64 // Pulses per second
-	BuzzerModDepth    float64 // Modulation depth
+	BuzzerEnabled     bool    `json:"buzzer_enabled"`
+	BuzzerFrequency   float64 `json:"buzzer_frequency"` // 4625 Hz typical UVB-76 carrier
+	BuzzerPulseRate   float64 `json:"buzzer_pulse_rate"` // Pulses per second
+	BuzzerModDepth    float64 `json:"buzzer_mod_depth"` // Modulation depth
 
 	// Filter parameters
-	LowPassEnabled    bool
-	LowPassCutoff     float64 // Hz
-	HighPassEnabled   bool
-	HighPassCutoff    float64 // Hz
-	BandPassEnabled   bool
-	BandPassCenter    float64 // Hz
-	BandPassQ         float64 // Quality factor
+	LowPassEnabled    bool    `json:"low_pass_enabled"`
+	LowPassCutoff     float64 `json:"low_pass_cutoff"` // Hz
+	HighPassEnabled   bool    `json:"high_pass_enabled"`
+	HighPassCutoff    float64 `json:"high_pass_cutoff"` // Hz
+	BandPassEnabled   bool    `json:"band_pass_enabled"`
+	BandPassCenter    float64 `json:"band_pass_center"` // Hz
+	BandPassQ         float64 `json:"band_pass_q"` // Quality factor
 
 	// Distortion effects
-	DistortionEnabled bool
-	DistortionAmount  float64 // 0-1
-	BitCrushEnabled   bool
-	BitCrushDepth     int     // Bit reduction
-	SampleRateReduceEnabled bool
-	SampleRateReduce  int     // Sample rate reduction
+	DistortionEnabled bool    `json:"distortion_enabled"`
+	DistortionAmount  float64 `json:"distortion_amount"` // 0-1
+	BitCrushEnabled   bool    `json:"bit_crush_enabled"`
+	BitCrushDepth     int     `json:"bit_crush_depth"` // Bit reduction
+	SampleRateReduceEnabled bool `json:"sample_rate_reduce_enabled"`
+	SampleRateReduce  int     `json:"sample_rate_reduce"` // Sample rate reduction
 
 	// Modulation effects
-	RingModEnabled        bool
-	RingModFreq           float64 // Hz
-	AmplitudeModEnabled   bool
-	AmplitudeModFreq      float64 // Hz
-	AmplitudeModDepth     float64 // 0-1
-	PhaseModEnabled       bool
-	PhaseModFreq          float64 // Hz
-	PhaseModDepth         float64 // radians
+	RingModEnabled        bool    `json:"ring_mod_enabled"`
+	RingModFreq           float64 `json:"ring_mod_freq"` // Hz
+	AmplitudeModEnabled   bool    `json:"amplitude_mod_enabled"`
+	AmplitudeModFreq      float64 `json:"amplitude_mod_freq"` // Hz
+	AmplitudeModDepth     float64 `json:"amplitude_mod_depth"` // 0-1
+	PhaseModEnabled       bool    `json:"phase_mod_enabled"`
+	PhaseModFreq          float64 `json:"phase_mod_freq"` // Hz
+	PhaseModDepth         float64 `json:"phase_mod_depth"` // radians
 
 	// Time-based effects
-	ReverbEnabled     bool
-	ReverbAmount      float64 // 0-1
-	ReverbDecay       float64 // seconds
-	DelayEnabled      bool
-	DelayTime         float64 // seconds
-	DelayFeedback     float64 // 0-1
-	DelayAmount       float64 // 0-1
+	ReverbEnabled     bool    `json:"reverb_enabled"`
+	ReverbAmount      float64 `json:"reverb_amount"` // 0-1
+	ReverbDecay       float64 `json:"reverb_decay"` // seconds
+	DelayEnabled      bool    `json:"delay_enabled"`
+	DelayTime         float64 `json:"delay_time"` // seconds
+	DelayFeedback     float64 `json:"delay_feedback"` // 0-1
+	DelayAmount       float64 `json:"delay_amount"` // 0-1
 
 	// Noise generation
-	NoiseFloorEnabled bool
-	NoiseFloor        float64 // -60 to 0 dB
-	PulseInterference bool    // Simulated pulse interference
-	StaticCrackleEnabled bool
-	StaticCrackle     float64 // Static amount 0-1
+	NoiseFloorEnabled bool    `json:"noise_floor_enabled"`
+	NoiseFloor        float64 `json:"noise_floor"` // -60 to 0 dB
+	PulseInterference bool    `json:"pulse_interference"` // Simulated pulse interference
+	StaticCrackleEnabled bool `json:"static_crackle_enabled"`
+	StaticCrackle     float64 `json:"static_crackle"` // Static amount 0-1
 
 	// EQ bands
-	EqEnabled         bool
-	EqBassGain        float64 // dB
-	EqMidGain         float64 // dB
-	EqTrebleGain      float64 // dB
+	EqEnabled         bool    `json:"eq_enabled"`
+	EqBassGain        float64 `json:"eq_bass_gain"` // dB
+	EqMidGain         float64 `json:"eq_mid_gain"` // dB
+	EqTrebleGain      float64 `json:"eq_treble_gain"` // dB
 
 	// Compression
-	CompressorEnabled   bool
-	CompressorThreshold float64 // -60 to 0 dB
-	CompressorRatio     float64 // 1:1 to 20:1
-	CompressorAttack    float64 // ms
-	CompressorRelease   float64 // ms
+	CompressorEnabled   bool    `json:"compressor_enabled"`
+	CompressorThreshold float64 `json:"compressor_threshold"` // -60 to 0 dB
+	CompressorRatio     float64 `json:"compressor_ratio"` // 1:1 to 20:1
+	CompressorAttack    float64 `json:"compressor_attack"` // ms
+	CompressorRelease   float64 `json:"compressor_release"` // ms
 
 	// Special effects
-	WowFlutterEnabled  bool   // Tape wow/flutter simulation
-	RadioFading        bool   // Simulate HF radio fading
-	FilterSweepEnabled bool   // Sweeping filter effect
+	WowFlutterEnabled  bool   `json:"wow_flutter_enabled"` // Tape wow/flutter simulation
+	RadioFading        bool   `json:"radio_fading"` // Simulate HF radio fading
+	FilterSweepEnabled bool   `json:"filter_sweep_enabled"` // Sweeping filter effect
 
 	// New Special Filters
-	RadioNoiseEnabled     bool
-	WalkieTalkieEnabled   bool
-	DistortedAudioEnabled bool
+	RadioNoiseEnabled     bool `json:"radio_noise_enabled"`
+	WalkieTalkieEnabled   bool `json:"walkie_talkie_enabled"`
+	DistortedAudioEnabled bool `json:"distorted_audio_enabled"`
+
+	// Beep and Mix settings
+	BeepVolume           float64 `json:"beep_volume"`
+	BeepFrequency        float64 `json:"beep_frequency"`
+	BeepDotDuration      float64 `json:"beep_dot_duration"`
+	ExternalAudioVolume  float64 `json:"external_audio_volume"`
 }
 
 // --- Global State Variables ---
@@ -129,6 +195,9 @@ var (
 	audioSamples   []float64
 	processedAudio []float64
 	waveformData   []float64
+	spectrumData   []float64
+	spectrumPeaks  []float64
+	visualizerMode = 0 // 0: Waveform, 1: Spectrum Analyzer
 	zoomLevel      = 1.0
 	zoomOffset     = 0.0
 	isStreaming    = false
@@ -201,6 +270,10 @@ var (
 		RadioNoiseEnabled:       false,
 		WalkieTalkieEnabled:     false,
 		DistortedAudioEnabled:   false,
+		BeepVolume:              0.8,
+		BeepFrequency:           800.0,
+		BeepDotDuration:         0.1,
+		ExternalAudioVolume:     0.8,
 	}
 )
 
@@ -861,7 +934,6 @@ func processAudioEffects(samples []float64, proc *AudioProcessor) []float64 {
 	}
 
 	// 1. MIXING SIGNAL SOURCES & NOISES FIRST
-	// - Continuous UVB-76 Buzzer Carrier
 	if proc.BuzzerEnabled {
 		processed = addBuzzerCarrier(processed, proc.BuzzerFrequency, proc.BuzzerPulseRate, proc.BuzzerModDepth)
 	}
@@ -994,8 +1066,16 @@ func textToMorse(text string) string {
 }
 
 func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 {
-	freq := 800.0
-	dotDuration := 0.1
+	freq := audioProc.BeepFrequency
+	if freq <= 0 {
+		freq = 800.0
+	}
+	dotDuration := audioProc.BeepDotDuration
+	if dotDuration <= 0 {
+		dotDuration = 0.1
+	}
+	beepVol := audioProc.BeepVolume
+	externalVol := audioProc.ExternalAudioVolume
 
 	dotSamples := int(float64(sampleRate) * dotDuration)
 	dashSamples := dotSamples * 3
@@ -1008,7 +1088,7 @@ func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 
 		fadeSamples := int(float64(sampleRate) * 0.01)
 		for i := 0; i < numSamples; i++ {
 			t := float64(i) / float64(sampleRate)
-			val := math.Sin(2 * math.Pi * freq * t)
+			val := math.Sin(2 * math.Pi * freq * t) * beepVol
 
 			if i < fadeSamples {
 				val *= float64(i) / float64(fadeSamples)
@@ -1046,6 +1126,9 @@ func generateAudioBuffers(morseCode string, externalAudioPath string) []float64 
 	if externalAudioPath != "" {
 		if ext, err := loadExternalAudio(externalAudioPath); err == nil {
 			externalSamples = ext
+			for i := range externalSamples {
+				externalSamples[i] *= externalVol
+			}
 		}
 	}
 
@@ -1124,6 +1207,57 @@ func computeWaveform(samples []float64, canvasWidth int) []float64 {
 	}
 
 	return waveform
+}
+
+func computeSpectrum(samples []float64, numBins int) []float64 {
+	bins := make([]float64, numBins)
+	if len(samples) == 0 {
+		return bins
+	}
+
+	windowSize := 1024
+	step := 512
+	if len(samples) < windowSize {
+		windowSize = len(samples)
+		step = windowSize
+	}
+
+	count := 0
+	for start := 0; start+windowSize <= len(samples); start += step {
+		segment := samples[start : start+windowSize]
+		for b := 0; b < numBins; b++ {
+			minFreq := 40.0
+			maxFreq := 12000.0
+			freq := minFreq * math.Pow(maxFreq/minFreq, float64(b)/float64(numBins))
+			
+			realSum := 0.0
+			imagSum := 0.0
+			for n := 0; n < windowSize; n++ {
+				w := 0.5 * (1.0 - math.Cos(2*math.Pi*float64(n)/float64(windowSize-1)))
+				angle := 2.0 * math.Pi * freq * (float64(n) / float64(sampleRate))
+				realSum += segment[n] * w * math.Cos(angle)
+				imagSum += segment[n] * w * math.Sin(angle)
+			}
+			mag := math.Sqrt(realSum*realSum + imagSum*imagSum) / float64(windowSize)
+			bins[b] += mag
+		}
+		count++
+		if count > 200 { // limit CPU usage
+			break
+		}
+	}
+
+	if count > 0 {
+		for b := 0; b < numBins; b++ {
+			bins[b] /= float64(count)
+			bins[b] = math.Log10(1.0 + bins[b]*60.0)
+			if bins[b] > 1.0 {
+				bins[b] = 1.0
+			}
+		}
+	}
+
+	return bins
 }
 
 // --- Media Pipeline Control Engine ---
@@ -1340,7 +1474,7 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	settingsWin.SetInnerHeight(490)
 	settingsWin.SetResizable(false)
 	settingsWin.SetHasMaxButton(false)
-	settingsWin.SetTitle("Audio Processing Settings - UVB-76 Synth Dashboard")
+	settingsWin.SetTitle("Audio Processing Settings")
 
 	font, _ := wui.NewFont(wui.FontDesc{Name: "Segoe UI", Height: -12})
 	settingsWin.SetFont(font)
@@ -1565,6 +1699,51 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	txtTreble.SetText(fmt.Sprintf("%.1f", audioProc.EqTrebleGain))
 	settingsWin.Add(txtTreble)
 
+	lblBeepHeader := wui.NewLabel()
+	lblBeepHeader.SetBounds(260, 312, 220, 20)
+	lblBeepHeader.SetText("─ Beep & External Mix ────────")
+	settingsWin.Add(lblBeepHeader)
+
+	lblBeepFreq := wui.NewLabel()
+	lblBeepFreq.SetBounds(260, 338, 130, 20)
+	lblBeepFreq.SetText("Beep Freq (Hz):")
+	settingsWin.Add(lblBeepFreq)
+
+	txtBeepFreq := wui.NewEditLine()
+	txtBeepFreq.SetBounds(400, 338, 70, 22)
+	txtBeepFreq.SetText(fmt.Sprintf("%.0f", audioProc.BeepFrequency))
+	settingsWin.Add(txtBeepFreq)
+
+	lblBeepVol := wui.NewLabel()
+	lblBeepVol.SetBounds(260, 366, 130, 20)
+	lblBeepVol.SetText("Beep Volume:")
+	settingsWin.Add(lblBeepVol)
+
+	txtBeepVol := wui.NewEditLine()
+	txtBeepVol.SetBounds(400, 366, 70, 22)
+	txtBeepVol.SetText(fmt.Sprintf("%.2f", audioProc.BeepVolume))
+	settingsWin.Add(txtBeepVol)
+
+	lblBeepDur := wui.NewLabel()
+	lblBeepDur.SetBounds(260, 394, 130, 20)
+	lblBeepDur.SetText("Beep Dur (s):")
+	settingsWin.Add(lblBeepDur)
+
+	txtBeepDur := wui.NewEditLine()
+	txtBeepDur.SetBounds(400, 394, 70, 22)
+	txtBeepDur.SetText(fmt.Sprintf("%.2f", audioProc.BeepDotDuration))
+	settingsWin.Add(txtBeepDur)
+
+	lblExtVol := wui.NewLabel()
+	lblExtVol.SetBounds(260, 422, 130, 20)
+	lblExtVol.SetText("Ext Audio Vol:")
+	settingsWin.Add(lblExtVol)
+
+	txtExtVol := wui.NewEditLine()
+	txtExtVol.SetBounds(400, 422, 70, 22)
+	txtExtVol.SetText(fmt.Sprintf("%.2f", audioProc.ExternalAudioVolume))
+	settingsWin.Add(txtExtVol)
+
 
 	// Column 3: Space & Time FX (X: 500 to 720)
 	lblCol3Header := wui.NewLabel()
@@ -1782,6 +1961,11 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtAmpMod.SetText("2.0")
 		chkPhaseMod.SetChecked(false)
 		txtPhaseMod.SetText("1.0")
+
+		txtBeepFreq.SetText("800")
+		txtBeepVol.SetText("0.80")
+		txtBeepDur.SetText("0.10")
+		txtExtVol.SetText("0.80")
 	})
 
 	btnRadio.SetOnClick(func() {
@@ -1839,6 +2023,11 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtAmpMod.SetText("0.0")
 		chkPhaseMod.SetChecked(false)
 		txtPhaseMod.SetText("1.0")
+
+		txtBeepFreq.SetText("1000")
+		txtBeepVol.SetText("0.60")
+		txtBeepDur.SetText("0.08")
+		txtExtVol.SetText("0.50")
 	})
 
 	btnLoFi.SetOnClick(func() {
@@ -1898,6 +2087,11 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtAmpMod.SetText("3.0")
 		chkPhaseMod.SetChecked(false)
 		txtPhaseMod.SetText("1.0")
+
+		txtBeepFreq.SetText("600")
+		txtBeepVol.SetText("0.70")
+		txtBeepDur.SetText("0.15")
+		txtExtVol.SetText("0.90")
 	})
 
 	btnClean.SetOnClick(func() {
@@ -1955,6 +2149,11 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		txtAmpMod.SetText("0.0")
 		chkPhaseMod.SetChecked(false)
 		txtPhaseMod.SetText("1.0")
+
+		txtBeepFreq.SetText("800")
+		txtBeepVol.SetText("1.00")
+		txtBeepDur.SetText("0.10")
+		txtExtVol.SetText("1.00")
 	})
 
 	sepFooter := wui.NewLabel()
@@ -2033,6 +2232,11 @@ func showAudioSettingsDialog(parent *wui.Window) {
 		audioProc.PhaseModEnabled = chkPhaseMod.Checked()
 		audioProc.PhaseModFreq, _ = strconv.ParseFloat(txtPhaseMod.Text(), 64)
 
+		audioProc.BeepFrequency, _ = strconv.ParseFloat(txtBeepFreq.Text(), 64)
+		audioProc.BeepVolume, _ = strconv.ParseFloat(txtBeepVol.Text(), 64)
+		audioProc.BeepDotDuration, _ = strconv.ParseFloat(txtBeepDur.Text(), 64)
+		audioProc.ExternalAudioVolume, _ = strconv.ParseFloat(txtExtVol.Text(), 64)
+
 		settingsWin.Close()
 	})
 
@@ -2040,6 +2244,10 @@ func showAudioSettingsDialog(parent *wui.Window) {
 }
 
 func runGUI() {
+	appCfg := loadConfig()
+	*audioProc = appCfg.Processor
+	visualizerMode = appCfg.VisualizerMode
+
 	_ = speaker.Init(beepFormat.SampleRate, beepFormat.SampleRate.N(time.Second/10))
 	
 	playbackController = NewPlaybackController()
@@ -2062,7 +2270,7 @@ func runGUI() {
 
 	txtMsg := wui.NewEditLine()
 	txtMsg.SetBounds(140, 13, 330, 24)
-	txtMsg.SetText("CQ CQ DE UVB-76")
+	txtMsg.SetText(appCfg.MorseMessage)
 	window.Add(txtMsg)
 
 	lblBg := wui.NewLabel()
@@ -2072,7 +2280,7 @@ func runGUI() {
 
 	txtBg := wui.NewEditLine()
 	txtBg.SetBounds(140, 43, 330, 24)
-	txtBg.SetText("background.jpg")
+	txtBg.SetText(appCfg.BackgroundImage)
 	window.Add(txtBg)
 
 	lblRtmp := wui.NewLabel()
@@ -2082,7 +2290,7 @@ func runGUI() {
 
 	txtRtmp := wui.NewEditLine()
 	txtRtmp.SetBounds(610, 13, 320, 24)
-	txtRtmp.SetText("rtmp://a.rtmp.youtube.com/live2/YOUR_STREAM_KEY")
+	txtRtmp.SetText(appCfg.RTMPURL)
 	window.Add(txtRtmp)
 
 	lblOut := wui.NewLabel()
@@ -2092,7 +2300,7 @@ func runGUI() {
 
 	txtOut := wui.NewEditLine()
 	txtOut.SetBounds(610, 43, 320, 24)
-	txtOut.SetText("")
+	txtOut.SetText(appCfg.OutputFile)
 	window.Add(txtOut)
 
 	lblExternalAudio := wui.NewLabel()
@@ -2102,7 +2310,7 @@ func runGUI() {
 
 	txtExternalAudio := wui.NewEditLine()
 	txtExternalAudio.SetBounds(140, 73, 260, 24)
-	txtExternalAudio.SetText("")
+	txtExternalAudio.SetText(appCfg.ExternalAudio)
 	window.Add(txtExternalAudio)
 
 	btnBrowseAudio := wui.NewButton()
@@ -2127,7 +2335,7 @@ func runGUI() {
 
 	txtDur := wui.NewEditLine()
 	txtDur.SetBounds(610, 73, 80, 24)
-	txtDur.SetText("0")
+	txtDur.SetText(fmt.Sprintf("%d", appCfg.Duration))
 	window.Add(txtDur)
 
 	chkLiveUpdate := wui.NewCheckBox()
@@ -2152,33 +2360,42 @@ func runGUI() {
 	globalPaintBox = paintBox
 
 	btnPlayPause := wui.NewButton()
-	btnPlayPause.SetBounds(20, 365, 150, 40)
+	btnPlayPause.SetBounds(20, 365, 130, 40)
 	btnPlayPause.SetText("▶ Play")
 	window.Add(btnPlayPause)
 	
 	btnStop := wui.NewButton()
-	btnStop.SetBounds(180, 365, 100, 40)
+	btnStop.SetBounds(160, 365, 90, 40)
 	btnStop.SetText("⏹ Stop")
 	btnStop.SetEnabled(false)
 	window.Add(btnStop)
 
 	btnZoomIn := wui.NewButton()
-	btnZoomIn.SetBounds(295, 365, 90, 40)
+	btnZoomIn.SetBounds(260, 365, 80, 40)
 	btnZoomIn.SetText("Zoom In")
 	window.Add(btnZoomIn)
 
 	btnZoomOut := wui.NewButton()
-	btnZoomOut.SetBounds(395, 365, 90, 40)
+	btnZoomOut.SetBounds(350, 365, 80, 40)
 	btnZoomOut.SetText("Zoom Out")
 	window.Add(btnZoomOut)
 
 	btnResetZoom := wui.NewButton()
-	btnResetZoom.SetBounds(495, 365, 90, 40)
+	btnResetZoom.SetBounds(440, 365, 60, 40)
 	btnResetZoom.SetText("Reset")
 	window.Add(btnResetZoom)
 
+	btnVisMode := wui.NewButton()
+	btnVisMode.SetBounds(510, 365, 140, 40)
+	if visualizerMode == 1 {
+		btnVisMode.SetText("📊 Spectrum Mode")
+	} else {
+		btnVisMode.SetText("📈 Waveform Mode")
+	}
+	window.Add(btnVisMode)
+
 	btnStream := wui.NewButton()
-	btnStream.SetBounds(600, 365, 330, 40)
+	btnStream.SetBounds(660, 365, 270, 40)
 	btnStream.SetText("🚀 Launch Transmit Chain")
 	btnStream.SetFont(font)
 	window.Add(btnStream)
@@ -2197,6 +2414,9 @@ func runGUI() {
 
 	audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpace(txtExternalAudio.Text()))
 	waveformData = computeWaveform(audioSamples, paintBox.Width())
+	spectrumData = computeSpectrum(audioSamples, 60)
+	spectrumPeaks = make([]float64, 60)
+	copy(spectrumPeaks, spectrumData)
 
 	btnGenerate.SetOnClick(func() {
 		btnGenerate.SetEnabled(false)
@@ -2216,9 +2436,25 @@ func runGUI() {
 				
 				zoomOffset = 0
 				waveformData = computeWaveform(audioSamples, paintBox.Width())
+				spectrumData = computeSpectrum(audioSamples, 60)
+				spectrumPeaks = make([]float64, 60)
+				copy(spectrumPeaks, spectrumData)
 				paintBox.Paint()
 				btnGenerate.SetEnabled(true)
 				lblStatus.SetText(fmt.Sprintf("Audio generated with effects. Total duration: %.2f seconds", float64(len(audioSamples))/float64(sampleRate)))
+
+				var durSec int
+				fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+				saveConfig(AppConfig{
+					Processor:       *audioProc,
+					MorseMessage:    txtMsg.Text(),
+					BackgroundImage: txtBg.Text(),
+					RTMPURL:         txtRtmp.Text(),
+					OutputFile:      txtOut.Text(),
+					ExternalAudio:   txtExternalAudio.Text(),
+					Duration:        durSec,
+					VisualizerMode:  visualizerMode,
+				})
 			})
 		}()
 	})
@@ -2241,55 +2477,169 @@ func runGUI() {
 				audioMutex.Unlock()
 				
 				waveformData = computeWaveform(audioSamples, paintBox.Width())
+				spectrumData = computeSpectrum(audioSamples, 60)
+				spectrumPeaks = make([]float64, 60)
+				copy(spectrumPeaks, spectrumData)
 				paintBox.Paint()
 				btnGenerate.SetEnabled(true)
 				lblStatus.SetText("Audio settings applied. Regenerated with new effects.")
+
+				var durSec int
+				fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+				saveConfig(AppConfig{
+					Processor:       *audioProc,
+					MorseMessage:    txtMsg.Text(),
+					BackgroundImage: txtBg.Text(),
+					RTMPURL:         txtRtmp.Text(),
+					OutputFile:      txtOut.Text(),
+					ExternalAudio:   txtExternalAudio.Text(),
+					Duration:        durSec,
+					VisualizerMode:  visualizerMode,
+				})
 			})
 		}()
 	})
 
 	paintBox.SetOnPaint(func(canvas *wui.Canvas) {
 		w, h := paintBox.Width(), paintBox.Height()
-		centerY := h / 2
-
 		canvas.FillRect(0, 0, w, h, wui.RGB(8, 12, 18))
 
-		audioMutex.RLock()
-		currentWaveform := waveformData
-		audioMutex.RUnlock()
-		
-		if len(currentWaveform) == 0 {
-			return
-		}
-
-		for i := 0; i < len(currentWaveform)-1; i++ {
-			x1 := int(float64(i) / float64(len(currentWaveform)) * float64(w))
-			y1 := centerY - int(currentWaveform[i]*float64(centerY-20))
-			x2 := int(float64(i+1) / float64(len(currentWaveform)) * float64(w))
-			y2 := centerY - int(currentWaveform[i+1]*float64(centerY-20))
-
-			if x2 >= w {
-				x2 = w - 1
+		if visualizerMode == 0 {
+			centerY := h / 2
+			audioMutex.RLock()
+			currentWaveform := waveformData
+			audioMutex.RUnlock()
+			
+			if len(currentWaveform) == 0 {
+				return
 			}
 
-			amp := int((math.Abs(currentWaveform[i])) * 255)
-			if amp > 255 {
-				amp = 255
+			// Draw grid background
+			for i := 1; i < 10; i++ {
+				gx := i * w / 10
+				canvas.Line(gx, 0, gx, h, wui.RGB(20, 25, 35))
 			}
-			color := wui.RGB(uint8(amp/3), uint8(200-amp/4), uint8(amp/2))
-			canvas.Line(x1, y1, x2, y2, color)
-		}
+			canvas.Line(0, centerY, w, centerY, wui.RGB(40, 50, 65))
 
-		canvas.Line(0, centerY, w, centerY, wui.RGB(60, 60, 80))
+			for i := 0; i < len(currentWaveform)-1; i++ {
+				x1 := int(float64(i) / float64(len(currentWaveform)) * float64(w))
+				y1 := centerY - int(currentWaveform[i]*float64(centerY-20))
+				x2 := int(float64(i+1) / float64(len(currentWaveform)) * float64(w))
+				y2 := centerY - int(currentWaveform[i+1]*float64(centerY-20))
 
-		startBarX := int(zoomOffset)
-		endBarX := int(float64(w)*zoomLevel + zoomOffset)
-		if startBarX >= 0 && startBarX < w {
-			canvas.Line(startBarX, 0, startBarX, h, wui.RGB(255, 100, 50))
+				if x2 >= w {
+					x2 = w - 1
+				}
+
+				amp := int((math.Abs(currentWaveform[i])) * 255)
+				if amp > 255 {
+					amp = 255
+				}
+				color := wui.RGB(uint8(amp/3), uint8(200-amp/4), uint8(amp/2))
+				canvas.Line(x1, y1, x2, y2, color)
+			}
+
+			startBarX := int(zoomOffset)
+			endBarX := int(float64(w)*zoomLevel + zoomOffset)
+			if startBarX >= 0 && startBarX < w {
+				canvas.Line(startBarX, 0, startBarX, h, wui.RGB(255, 100, 50))
+			}
+			if endBarX >= 0 && endBarX < w {
+				canvas.Line(endBarX, 0, endBarX, h, wui.RGB(255, 100, 50))
+			}
+		} else {
+			audioMutex.RLock()
+			currentSpectrum := spectrumData
+			currentPeaks := spectrumPeaks
+			audioMutex.RUnlock()
+
+			if len(currentSpectrum) == 0 {
+				return
+			}
+
+			// Draw dB grids
+			dbLevels := []float64{0.25, 0.5, 0.75}
+			dbLabels := []string{"-24 dB", "-12 dB", "-6 dB"}
+			for idx, lvl := range dbLevels {
+				gy := h - int(lvl*float64(h-40)) - 20
+				canvas.Line(0, gy, w, gy, wui.RGB(20, 28, 40))
+				canvas.TextOut(10, gy - 12, dbLabels[idx], wui.RGB(80, 100, 130))
+			}
+
+			// Draw frequency bands
+			freqLabels := []struct {
+				val  string
+				xPct float64
+			}{
+				{"100 Hz", 0.15},
+				{"500 Hz", 0.35},
+				{"1 kHz", 0.55},
+				{"5 kHz", 0.75},
+				{"10 kHz", 0.90},
+			}
+			for _, fl := range freqLabels {
+				fx := int(fl.xPct * float64(w))
+				canvas.Line(fx, 0, fx, h-20, wui.RGB(20, 28, 40))
+				canvas.TextOut(fx - 15, h - 18, fl.val, wui.RGB(80, 100, 130))
+			}
+
+			// Draw spectrum bars
+			numBars := len(currentSpectrum)
+			barWidth := (w - 40) / numBars
+			spacing := 2
+
+			for i := 0; i < numBars; i++ {
+				barHeight := int(currentSpectrum[i] * float64(h-60))
+				if barHeight < 2 {
+					barHeight = 2
+				}
+				bx := 20 + i*(barWidth+spacing)
+
+				// Draw a stunning neon blue/cyan/purple gradient bar
+				for j := 0; j < barHeight; j++ {
+					pct := float64(j) / float64(h-60)
+					r := uint8(255 * pct)
+					g := uint8(100 + 155*(1.0-pct))
+					b := uint8(255)
+					canvas.FillRect(bx, h - 25 - j, bx+barWidth, h - 25 - j + 1, wui.RGB(r, g, b))
+				}
+
+				// Draw peak hold dot
+				peakY := h - 25 - int(currentPeaks[i]*float64(h-60))
+				canvas.FillRect(bx, peakY, bx+barWidth, peakY+2, wui.RGB(255, 120, 0))
+
+				// Slowly decay peak hold
+				if currentPeaks[i] > currentSpectrum[i] {
+					currentPeaks[i] -= 0.005
+				} else {
+					currentPeaks[i] = currentSpectrum[i]
+				}
+			}
 		}
-		if endBarX >= 0 && endBarX < w {
-			canvas.Line(endBarX, 0, endBarX, h, wui.RGB(255, 100, 50))
+	})
+
+	btnVisMode.SetOnClick(func() {
+		if visualizerMode == 0 {
+			visualizerMode = 1
+			btnVisMode.SetText("📊 Spectrum Mode")
+		} else {
+			visualizerMode = 0
+			btnVisMode.SetText("📈 Waveform Mode")
 		}
+		paintBox.Paint()
+
+		var durSec int
+		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+		saveConfig(AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    txtMsg.Text(),
+			BackgroundImage: txtBg.Text(),
+			RTMPURL:         txtRtmp.Text(),
+			OutputFile:      txtOut.Text(),
+			ExternalAudio:   txtExternalAudio.Text(),
+			Duration:        durSec,
+			VisualizerMode:  visualizerMode,
+		})
 	})
 
 	btnZoomIn.SetOnClick(func() {
@@ -2397,6 +2747,20 @@ func runGUI() {
 		}
 
 		bgPath := strings.TrimSpace(txtBg.Text())
+
+		var durSec int
+		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+		saveConfig(AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    txtMsg.Text(),
+			BackgroundImage: txtBg.Text(),
+			RTMPURL:         txtRtmp.Text(),
+			OutputFile:      txtOut.Text(),
+			ExternalAudio:   txtExternalAudio.Text(),
+			Duration:        durSec,
+			VisualizerMode:  visualizerMode,
+		})
+
 		if _, err := os.Stat(bgPath); os.IsNotExist(err) {
 			lblStatus.SetText("Warning: Background not found. Creating generic black layout...")
 			if err := createDefaultBackground(bgPath); err != nil {
@@ -2404,9 +2768,6 @@ func runGUI() {
 				return
 			}
 		}
-
-		var durSec int
-		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
 
 		cfg := Config{
 			BackgroundImage: bgPath,
