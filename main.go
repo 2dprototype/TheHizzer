@@ -2834,6 +2834,8 @@ func showASCIIPainterDialog(
 	btnPlayPause *wui.Button,
 	btnStop *wui.Button,
 	paintBox *wui.PaintBox,
+	txtExternalAudio *wui.EditLine,
+	txtExternalAudio2 *wui.EditLine,
 	updateUI func(func()),
 	refreshVisualizer func(),
 ) {
@@ -2851,7 +2853,7 @@ func showASCIIPainterDialog(
 	monoFont, _ := wui.NewFont(wui.FontDesc{Name: "Consolas", Height: -14})
 
 	textEdit := wui.NewTextEdit()
-	textEdit.SetBounds(10, 10, 780, 370)
+	textEdit.SetBounds(10, 10, 780, 400)
 	textEdit.SetWordWrap(false)
 	textEdit.SetWritesTabs(true)
 	textEdit.SetFont(monoFont)
@@ -2864,118 +2866,38 @@ func showASCIIPainterDialog(
 #   #  ###  #####  #####  #####  #   # `
 	textEdit.SetText(defaultArt)
 
-	lblPresets := wui.NewLabel()
-	lblPresets.SetBounds(10, 393, 60, 20)
-	lblPresets.SetText("Presets:")
-	editorWindow.Add(lblPresets)
+	btnGenerate := wui.NewButton()
+	btnGenerate.SetBounds(10, 425, 110, 32)
+	btnGenerate.SetText("Generate")
+	editorWindow.Add(btnGenerate)
 
-	btnPresetHizzer := wui.NewButton()
-	btnPresetHizzer.SetBounds(75, 390, 75, 26)
-	btnPresetHizzer.SetText("Hizzer")
-	editorWindow.Add(btnPresetHizzer)
+	btnPlayStop := wui.NewButton()
+	btnPlayStop.SetBounds(130, 425, 110, 32)
+	btnPlayStop.SetText("▶ Play")
+	editorWindow.Add(btnPlayStop)
 
-	btnPresetSmiley := wui.NewButton()
-	btnPresetSmiley.SetBounds(155, 390, 75, 26)
-	btnPresetSmiley.SetText("Smiley")
-	editorWindow.Add(btnPresetSmiley)
+	btnGenExt1 := wui.NewButton()
+	btnGenExt1.SetBounds(250, 425, 110, 32)
+	btnGenExt1.SetText("Gen. Ext1")
+	editorWindow.Add(btnGenExt1)
 
-	btnPresetHeart := wui.NewButton()
-	btnPresetHeart.SetBounds(235, 390, 75, 26)
-	btnPresetHeart.SetText("Heart")
-	editorWindow.Add(btnPresetHeart)
-
-	btnPresetWave := wui.NewButton()
-	btnPresetWave.SetBounds(315, 390, 75, 26)
-	btnPresetWave.SetText("Wave")
-	editorWindow.Add(btnPresetWave)
-
-	btnPresetHizzer.SetOnClick(func() {
-		textEdit.SetText(defaultArt)
-	})
-
-	btnPresetSmiley.SetOnClick(func() {
-		textEdit.SetText(`      #####      
-    ##     ##    
-   #  #   #  #   
-  #           #  
-  #  #     #  #  
-  #   #####   #  
-   #         #   
-    ##     ##    
-      #####      `)
-	})
-
-	btnPresetHeart.SetOnClick(func() {
-		textEdit.SetText(`  ######   ######  
- ##    ## ##    ## 
-#        #        #
-#                 #
- #               # 
-  #             #  
-   #           #   
-    ##       ##    
-      ##   ##      
-        ###        `)
-	})
-
-	btnPresetWave.SetOnClick(func() {
-		textEdit.SetText(`    #            #      
-   # #          # #     
-  #   #        #   #    
- #     #      #     #   
-#       #    #       #  
-         #  #         # 
-          ##           #`)
-	})
-
-	btnGeneratePlay := wui.NewButton()
-	btnGeneratePlay.SetBounds(10, 430, 180, 35)
-	btnGeneratePlay.SetText("🎨 Generate & Play")
-	editorWindow.Add(btnGeneratePlay)
-
-	btnStopAudio := wui.NewButton()
-	btnStopAudio.SetBounds(200, 430, 100, 35)
-	btnStopAudio.SetText("⏹ Stop")
-	editorWindow.Add(btnStopAudio)
+	btnGenExt2 := wui.NewButton()
+	btnGenExt2.SetBounds(370, 425, 110, 32)
+	btnGenExt2.SetText("Gen. Ext2")
+	editorWindow.Add(btnGenExt2)
 
 	btnImportImage := wui.NewButton()
-	btnImportImage.SetBounds(310, 430, 150, 35)
+	btnImportImage.SetBounds(490, 425, 140, 32)
 	btnImportImage.SetText("🖼️ Image to ASCII")
 	editorWindow.Add(btnImportImage)
 
-	btnHelp := wui.NewButton()
-	btnHelp.SetBounds(470, 430, 150, 35)
-	btnHelp.SetText("ℹ️ How it Works")
-	editorWindow.Add(btnHelp)
-
 	btnClose := wui.NewButton()
-	btnClose.SetBounds(630, 430, 140, 35)
+	btnClose.SetBounds(640, 425, 150, 32)
 	btnClose.SetText("Close")
 	editorWindow.Add(btnClose)
 
 	btnClose.SetOnClick(func() {
 		editorWindow.Close()
-	})
-
-	btnHelp.SetOnClick(func() {
-		wui.MessageBox("How It Works",
-			"This tool converts ASCII art into a playable audio signal!\n\n"+
-				"1. Columns of the text correspond to frequency bins in the waterfall spectrogram.\n"+
-				"2. Rows of the text correspond to segments of time in the audio (played bottom to top).\n"+
-				"3. Non-space characters act as active pixels, generating sound at that frequency and time.\n"+
-				"4. Different characters generate different volume levels (e.g. '@' is loud, '.' is quiet).\n\n"+
-				"Press 'Generate & Play' to see your artwork appear in the waterfall visualizer!")
-	})
-
-	btnStopAudio.SetOnClick(func() {
-		if playbackController.IsPlaying() {
-			playbackController.Stop()
-			updateUI(func() {
-				btnPlayPause.SetText("▶ Play")
-				btnStop.SetEnabled(false)
-				lblStatus.SetText("Playback stopped.")
-			})
-		}
 	})
 
 	btnImportImage.SetOnClick(func() {
@@ -2994,15 +2916,15 @@ func showASCIIPainterDialog(
 		}
 	})
 
-	btnGeneratePlay.SetOnClick(func() {
+	btnGenerate.SetOnClick(func() {
 		art := textEdit.Text()
 		if len(strings.TrimSpace(art)) == 0 {
 			wui.MessageBox("Empty Canvas",
-				"Please enter some ASCII art or load a preset first!")
+				"Please enter some ASCII art or import an image first!")
 			return
 		}
 
-		btnGeneratePlay.SetEnabled(false)
+		btnGenerate.SetEnabled(false)
 		lblStatus.SetText("Generating ASCII Art audio...")
 
 		go func() {
@@ -3017,29 +2939,136 @@ func showASCIIPainterDialog(
 			audioMutex.Unlock()
 
 			updateUI(func() {
-				btnGeneratePlay.SetEnabled(true)
+				btnGenerate.SetEnabled(true)
 				btnVisMode.SetText("🌊 Waterfall Mode")
 
 				// Repaint and trigger visualizer recalculation
 				paintBox.Paint()
 				refreshVisualizer()
 
-				// Play the generated sound
-				if playbackController.IsPlaying() {
-					playbackController.Stop()
-				}
+				lblStatus.SetText("ASCII Spectrogram audio generated successfully.")
+			})
+		}()
+	})
 
-				playbackController.Play(samples, func() {
-					updateUI(func() {
-						btnPlayPause.SetText("▶ Play")
-						btnStop.SetEnabled(false)
-						lblStatus.SetText("ASCII Spectrogram playback completed.")
-					})
+	btnPlayStop.SetOnClick(func() {
+		audioMutex.RLock()
+		samples := audioSamples
+		audioMutex.RUnlock()
+
+		if len(samples) == 0 {
+			wui.MessageBox("No Audio",
+				"Please generate the ASCII art audio first!")
+			return
+		}
+
+		if !playbackController.IsPlaying() {
+			btnPlayStop.SetText("⏹ Stop")
+			lblStatus.SetText("Playing ASCII Spectrogram audio...")
+			btnPlayPause.SetText("⏸ Pause")
+			btnStop.SetEnabled(true)
+
+			playbackController.Play(samples, func() {
+				updateUI(func() {
+					btnPlayStop.SetText("▶ Play")
+					btnPlayPause.SetText("▶ Play")
+					btnStop.SetEnabled(false)
+					lblStatus.SetText("ASCII Spectrogram playback completed.")
 				})
+			})
+		} else {
+			playbackController.Stop()
+			updateUI(func() {
+				btnPlayStop.SetText("▶ Play")
+				btnPlayPause.SetText("▶ Play")
+				btnStop.SetEnabled(false)
+				lblStatus.SetText("Playback stopped.")
+			})
+		}
+	})
 
-				btnPlayPause.SetText("⏸ Pause")
-				btnStop.SetEnabled(true)
-				lblStatus.SetText("Playing ASCII Spectrogram audio...")
+	btnGenExt1.SetOnClick(func() {
+		art := textEdit.Text()
+		if len(strings.TrimSpace(art)) == 0 {
+			wui.MessageBox("Empty Canvas",
+				"Please enter some ASCII art or import an image first!")
+			return
+		}
+
+		btnGenExt1.SetEnabled(false)
+		lblStatus.SetText("Generating and saving WAV to External Audio 1...")
+
+		go func() {
+			samples := generateAudioFromASCII(art)
+
+			// Save to wav
+			err := writeWavFile("external_audio_1.wav", samples, sampleRate)
+
+			audioMutex.Lock()
+			audioSamples = samples
+			visualizerMode = 2 // Switch to Waterfall Spectrogram
+			waveformDirty = true
+			spectrumDirty = true
+			waterfallDirty = true
+			audioMutex.Unlock()
+
+			updateUI(func() {
+				btnGenExt1.SetEnabled(true)
+				btnVisMode.SetText("🌊 Waterfall Mode")
+				paintBox.Paint()
+				refreshVisualizer()
+
+				if err != nil {
+					wui.MessageBoxError("Save Error",
+						"Failed to save WAV file: "+err.Error())
+					lblStatus.SetText("Failed to save External Audio 1.")
+				} else {
+					txtExternalAudio.SetText("external_audio_1.wav")
+					lblStatus.SetText("Successfully generated and loaded into External Audio 1!")
+				}
+			})
+		}()
+	})
+
+	btnGenExt2.SetOnClick(func() {
+		art := textEdit.Text()
+		if len(strings.TrimSpace(art)) == 0 {
+			wui.MessageBox("Empty Canvas",
+				"Please enter some ASCII art or import an image first!")
+			return
+		}
+
+		btnGenExt2.SetEnabled(false)
+		lblStatus.SetText("Generating and saving WAV to External Audio 2...")
+
+		go func() {
+			samples := generateAudioFromASCII(art)
+
+			// Save to wav
+			err := writeWavFile("external_audio_2.wav", samples, sampleRate)
+
+			audioMutex.Lock()
+			audioSamples = samples
+			visualizerMode = 2 // Switch to Waterfall Spectrogram
+			waveformDirty = true
+			spectrumDirty = true
+			waterfallDirty = true
+			audioMutex.Unlock()
+
+			updateUI(func() {
+				btnGenExt2.SetEnabled(true)
+				btnVisMode.SetText("🌊 Waterfall Mode")
+				paintBox.Paint()
+				refreshVisualizer()
+
+				if err != nil {
+					wui.MessageBoxError("Save Error",
+						"Failed to save WAV file: "+err.Error())
+					lblStatus.SetText("Failed to save External Audio 2.")
+				} else {
+					txtExternalAudio2.SetText("external_audio_2.wav")
+					lblStatus.SetText("Successfully generated and loaded into External Audio 2!")
+				}
 			})
 		}()
 	})
@@ -3570,6 +3599,8 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			btnPlayPause,
 			btnStop,
 			paintBox,
+			txtExternalAudio,
+			txtExternalAudio2,
 			updateUI,
 			refreshVisualizer,
 		)
