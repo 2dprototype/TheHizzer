@@ -2725,10 +2725,8 @@ func generateAudioFromASCII(art string) []float64 {
 	phases := make([]float64, W)
 
 	// Generate samples with smooth spline linear amplitude interpolation
-	// FIX: Process rows in normal order (0 to H-1) instead of reversed
 	for n := 0; n < totalSamples; n++ {
 		i := n / rowSamples // Segment index
-		// FIX: Use i directly instead of reversing with H-1-i
 		r := i
 
 		m := n % rowSamples
@@ -2738,22 +2736,19 @@ func generateAudioFromASCII(art string) []float64 {
 		r_next := i + 1
 		r_prev := i - 1
 
-		// FIX: Also reverse the frequency bin order to fix mirroring
 		var sum float64
 		for c := 0; c < W; c++ {
-			// Reverse the column index to fix horizontal mirroring
-			reversedC := W - 1 - c
-			
-			A_curr := amps[r][reversedC]
+			// FIXED: Use c directly without reversing (removed the reversed column index)
+			A_curr := amps[r][c]
 
 			var A_next float64
 			if r_next < H {
-				A_next = amps[r_next][reversedC]
+				A_next = amps[r_next][c]
 			}
 
 			var A_prev float64
 			if r_prev >= 0 {
-				A_prev = amps[r_prev][reversedC]
+				A_prev = amps[r_prev][c]
 			}
 
 			var targetAmp float64
@@ -2870,7 +2865,7 @@ func showASCIIPainterDialog(
 	editorWindow := wui.NewWindow()
 	editorWindow.SetInnerPosition(parent.X()+40, parent.Y()+40)
 	editorWindow.SetInnerWidth(800)
-	editorWindow.SetInnerHeight(460)
+	editorWindow.SetInnerHeight(490)
 	editorWindow.SetResizable(false)
 	editorWindow.SetHasMaxButton(false)
 	editorWindow.SetTitle("ASCII Spectrogram Painter")
@@ -2881,7 +2876,7 @@ func showASCIIPainterDialog(
 	monoFont, _ := wui.NewFont(wui.FontDesc{Name: "Consolas", Height: -14})
 
 	textEdit := wui.NewTextEdit()
-	textEdit.SetBounds(10, 10, 780, 400)
+	textEdit.SetBounds(10, 10, 780, 370)
 	textEdit.SetWordWrap(false)
 	textEdit.SetWritesTabs(true)
 	textEdit.SetFont(monoFont)
@@ -2890,33 +2885,64 @@ func showASCIIPainterDialog(
 	defaultArt := ".:-=+*#%@"
 	textEdit.SetText(defaultArt)
 
+	// ASCII conversion settings panel
+	lblAsciiSettings := wui.NewLabel()
+	lblAsciiSettings.SetBounds(10, 390, 150, 20)
+	lblAsciiSettings.SetText("Image to ASCII Settings:")
+	editorWindow.Add(lblAsciiSettings)
+
+	lblAsciiWidth := wui.NewLabel()
+	lblAsciiWidth.SetBounds(10, 415, 60, 20)
+	lblAsciiWidth.SetText("Width:")
+	editorWindow.Add(lblAsciiWidth)
+
+	txtAsciiWidth := wui.NewEditLine()
+	txtAsciiWidth.SetBounds(70, 413, 50, 24)
+	txtAsciiWidth.SetText("70")
+	editorWindow.Add(txtAsciiWidth)
+
+	lblAsciiHeight := wui.NewLabel()
+	lblAsciiHeight.SetBounds(140, 415, 60, 20)
+	lblAsciiHeight.SetText("Height:")
+	editorWindow.Add(lblAsciiHeight)
+
+	txtAsciiHeight := wui.NewEditLine()
+	txtAsciiHeight.SetBounds(200, 413, 50, 24)
+	txtAsciiHeight.SetText("60")
+	editorWindow.Add(txtAsciiHeight)
+
+	lblAsciiNote := wui.NewLabel()
+	lblAsciiNote.SetBounds(270, 415, 300, 20)
+	lblAsciiNote.SetText("(Max 120x80 for best performance)")
+	editorWindow.Add(lblAsciiNote)
+
 	btnGenerate := wui.NewButton()
-	btnGenerate.SetBounds(10, 420, 110, 32)
+	btnGenerate.SetBounds(10, 450, 110, 32)
 	btnGenerate.SetText("Generate")
 	editorWindow.Add(btnGenerate)
 
 	btnPlayStop := wui.NewButton()
-	btnPlayStop.SetBounds(130, 420, 110, 32)
+	btnPlayStop.SetBounds(130, 450, 110, 32)
 	btnPlayStop.SetText("Play")
 	editorWindow.Add(btnPlayStop)
 
 	btnGenExt1 := wui.NewButton()
-	btnGenExt1.SetBounds(250, 420, 110, 32)
+	btnGenExt1.SetBounds(250, 450, 110, 32)
 	btnGenExt1.SetText("Gen. Ext1")
 	editorWindow.Add(btnGenExt1)
 
 	btnGenExt2 := wui.NewButton()
-	btnGenExt2.SetBounds(370, 420, 110, 32)
+	btnGenExt2.SetBounds(370, 450, 110, 32)
 	btnGenExt2.SetText("Gen. Ext2")
 	editorWindow.Add(btnGenExt2)
 
 	btnImportImage := wui.NewButton()
-	btnImportImage.SetBounds(490, 420, 140, 32)
+	btnImportImage.SetBounds(490, 450, 140, 32)
 	btnImportImage.SetText("Image to ASCII")
 	editorWindow.Add(btnImportImage)
 
 	btnClose := wui.NewButton()
-	btnClose.SetBounds(640, 420, 150, 32)
+	btnClose.SetBounds(640, 450, 150, 32)
 	btnClose.SetText("Close")
 	editorWindow.Add(btnClose)
 
@@ -2930,7 +2956,24 @@ func showASCIIPainterDialog(
 		openDlg.AddFilter("Images (PNG, JPG)", "png", "jpg", "jpeg")
 		ok, path := openDlg.ExecuteSingleSelection(editorWindow)
 		if ok {
-			asciiArt, err := convertImageToASCII(path, 70, 60)
+			// Parse width and height from input fields
+			asciiWidth, err := strconv.Atoi(txtAsciiWidth.Text())
+			if err != nil || asciiWidth < 10 {
+				asciiWidth = 70
+			}
+			if asciiWidth > 120 {
+				asciiWidth = 120
+			}
+
+			asciiHeight, err := strconv.Atoi(txtAsciiHeight.Text())
+			if err != nil || asciiHeight < 5 {
+				asciiHeight = 60
+			}
+			if asciiHeight > 80 {
+				asciiHeight = 80
+			}
+
+			asciiArt, err := convertImageToASCII(path, asciiWidth, asciiHeight)
 			if err != nil {
 				wui.MessageBoxError("Conversion Error",
 					"Failed to load or convert image: "+err.Error())
@@ -3873,6 +3916,15 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 		zoomLevel *= 1.3
 		if zoomLevel > 20 {
 			zoomLevel = 20
+		}
+		waveformDirty = true
+		refreshVisualizer()
+	})
+	
+	btnZoomOut.SetOnClick(func() {
+		zoomLevel /= 1.3
+		if zoomLevel < 1.0 {
+			zoomLevel = 1.0
 		}
 		waveformDirty = true
 		refreshVisualizer()
