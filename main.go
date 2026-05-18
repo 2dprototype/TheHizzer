@@ -218,6 +218,17 @@ var (
 	streamCancel   context.CancelFunc
 	globalPaintBox *wui.PaintBox
 
+	// Live Mic capture state
+	liveMicMutex  sync.RWMutex
+	liveMicCmd    *exec.Cmd
+	liveMicCancel context.CancelFunc
+	liveMicData   []float64
+	liveMicQueue  []float64
+
+	// Broadcast/Playback monitor state
+	broadcastMutex sync.RWMutex
+	broadcastData  []float64
+
 	// Playback control
 	playbackController *PlaybackController
 
@@ -1483,17 +1494,8 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 		args = append(args, "-re", "-loop", "1", "-i", cfg.BackgroundImage)
 	}
 
-	if cfg.UseLiveMic {
-		micDev := getDefaultDshowAudioDevice()
-		if micDev == "" {
-			return fmt.Errorf("no audio recording devices (microphone) detected on this system")
-		}
-		args = append(args, "-f", "dshow", "-i", "audio="+micDev)
-	}
-
-	if !isVid {
-		args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
-	}
+	// Unify: Always use pipe:0 for mixed broadcast + mic audio
+	args = append(args, "-f", "s16le", "-ar", "44100", "-ac", "1", "-i", "pipe:0")
 
 	args = append(args,
 		"-c:v", "libx264", "-preset", "veryfast",
@@ -1503,35 +1505,11 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 		"-vf", fmt.Sprintf("fps=%d,scale=1920:1080,format=yuv420p,drawtext=text='%%{pts\\:localtime}':x=10:y=10:fontsize=24:fontcolor=white", cfg.FPS),
 	)
 
-	if cfg.UseLiveMic {
-		if !isVid {
-			// Mix mic (Input 1) and pipe:0 (Input 2)
-			args = append(args,
-				"-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest,aresample=44100[a]",
-				"-map", "0:v", "-map", "[a]",
-			)
-		} else {
-			// Video background and live mic
-			// Map video (Input 0) and mic (Input 1)
-			args = append(args,
-				"-map", "0:v", "-map", "1:a",
-				"-af", "aresample=44100",
-			)
-		}
-	} else {
-		if !isVid {
-			// Map image (Input 0) and pipe:0 (Input 1)
-			args = append(args,
-				"-map", "0:v", "-map", "1:a",
-				"-af", "aresample=44100",
-			)
-		} else {
-			// Video background and no live mic, default map works or map 0:v and 0:a if present
-			args = append(args,
-				"-af", "aresample=44100",
-			)
-		}
-	}
+	// Unified mapping for both video and image backgrounds
+	args = append(args,
+		"-map", "0:v", "-map", "1:a",
+		"-af", "aresample=44100",
+	)
 
 	if cfg.Duration > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", cfg.Duration))
@@ -1544,15 +1522,13 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	}
 	args = append(args, "-y")
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	
-	if isVid {
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		return cmd.Wait()
+	// Ensure background live mic capture is active if required
+	if cfg.UseLiveMic {
+		startLiveMicCapture()
 	}
 
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -1597,12 +1573,49 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 					time.Sleep(10 * time.Millisecond)
 					continue
 				}
+
+				// Consume mic samples from queue in Go if UseLiveMic is enabled
+				micSamples := make([]float64, chunkSize)
+				if cfg.UseLiveMic {
+					liveMicMutex.Lock()
+					n := len(liveMicQueue)
+					if n > 0 {
+						if n >= chunkSize {
+							copy(micSamples, liveMicQueue[:chunkSize])
+							liveMicQueue = liveMicQueue[chunkSize:]
+						} else {
+							copy(micSamples, liveMicQueue)
+							liveMicQueue = nil
+						}
+					}
+					liveMicMutex.Unlock()
+				}
+				
+				// Capture raw broadcast samples for visualizer
+				bcastSamples := make([]float64, chunkSize)
 				
 				for i := 0; i < chunkSize; i++ {
 					sampleIdx := (pos + i) % len(activeSamples)
-					val := int16(activeSamples[sampleIdx] * 32767.0)
+					bcastSamples[i] = activeSamples[sampleIdx]
+					
+					mixedSample := activeSamples[sampleIdx] + micSamples[i]
+					if mixedSample > 1.0 {
+						mixedSample = 1.0
+					} else if mixedSample < -1.0 {
+						mixedSample = -1.0
+					}
+					
+					val := int16(mixedSample * 32767.0)
 					binary.LittleEndian.PutUint16(buf[i*2:], uint16(val))
 				}
+				
+				// Update broadcast monitor buffer
+				broadcastMutex.Lock()
+				broadcastData = append(broadcastData, bcastSamples...)
+				if len(broadcastData) > 4096 {
+					broadcastData = broadcastData[len(broadcastData)-4096:]
+				}
+				broadcastMutex.Unlock()
 				
 				pos = (pos + chunkSize) % len(activeSamples)
 				
@@ -1718,14 +1731,32 @@ func (s *SliceStreamer) Stream(samples [][2]float64) (n int, ok bool) {
 	if s.pos >= len(s.samples) {
 		return 0, false
 	}
+	var playSamples []float64
 	for i := range samples {
 		if s.pos >= len(s.samples) {
+			if len(playSamples) > 0 {
+				broadcastMutex.Lock()
+				broadcastData = append(broadcastData, playSamples...)
+				if len(broadcastData) > 4096 {
+					broadcastData = broadcastData[len(broadcastData)-4096:]
+				}
+				broadcastMutex.Unlock()
+			}
 			return i, true
 		}
 		val := s.samples[s.pos]
 		samples[i][0] = val
 		samples[i][1] = val
+		playSamples = append(playSamples, val)
 		s.pos++
+	}
+	if len(playSamples) > 0 {
+		broadcastMutex.Lock()
+		broadcastData = append(broadcastData, playSamples...)
+		if len(broadcastData) > 4096 {
+			broadcastData = broadcastData[len(broadcastData)-4096:]
+		}
+		broadcastMutex.Unlock()
 	}
 	return len(samples), true
 }
@@ -2523,6 +2554,82 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	settingsWin.ShowModal()
 }
 
+func startLiveMicCapture() {
+	liveMicMutex.Lock()
+	defer liveMicMutex.Unlock()
+
+	if liveMicCancel != nil {
+		// Already running
+		return
+	}
+
+	micDev := getDefaultDshowAudioDevice()
+	if micDev == "" {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	liveMicCancel = cancel
+	liveMicData = make([]float64, 0, 4096)
+	liveMicQueue = make([]float64, 0, 88200)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-f", "dshow", "-i", "audio="+micDev, "-f", "s16le", "-ac", "1", "-ar", "44100", "-")
+	liveMicCmd = cmd
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		liveMicCancel = nil
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		liveMicCancel = nil
+		return
+	}
+
+	go func() {
+		reader := bufio.NewReader(stdoutPipe)
+		var sampleBuf [2]byte
+
+		for {
+			_, err := io.ReadFull(reader, sampleBuf[:])
+			if err != nil {
+				break
+			}
+			val := int16(binary.LittleEndian.Uint16(sampleBuf[:]))
+			sample := float64(val) / 32767.0
+
+			liveMicMutex.Lock()
+			liveMicData = append(liveMicData, sample)
+			if len(liveMicData) > 4096 {
+				liveMicData = liveMicData[len(liveMicData)-4096:]
+			}
+			liveMicQueue = append(liveMicQueue, sample)
+			if len(liveMicQueue) > 88200 { // Limit queue to 2 seconds of buffer to prevent memory growth
+				liveMicQueue = liveMicQueue[len(liveMicQueue)-88200:]
+			}
+			liveMicMutex.Unlock()
+		}
+
+		_ = cmd.Wait()
+	}()
+}
+
+func stopLiveMicCapture() {
+	liveMicMutex.Lock()
+	defer liveMicMutex.Unlock()
+
+	if liveMicCancel != nil {
+		liveMicCancel()
+		liveMicCancel = nil
+	}
+	liveMicCmd = nil
+	liveMicData = nil
+	liveMicQueue = nil
+}
+
 func runGUI() {
 	appCfg := loadConfig()
 	*audioProc = appCfg.Processor
@@ -2541,6 +2648,8 @@ func runGUI() {
 	window.SetHasMaxButton(false)
 	window.SetFont(font)
 	window.SetTitle("The Hizzer")
+
+	lblStatus := wui.NewLabel()
 
 	// Input Labels and Edit Fields
 	lblMsg := wui.NewLabel()
@@ -2662,21 +2771,84 @@ func runGUI() {
 	window.Add(lblDur)
 
 	txtDur := wui.NewEditLine()
-	txtDur.SetBounds(610, 73, 80, 24)
+	txtDur.SetBounds(610, 73, 60, 24)
 	txtDur.SetText(fmt.Sprintf("%d", appCfg.Duration))
 	window.Add(txtDur)
 
 	chkLiveUpdate := wui.NewCheckBox()
-	chkLiveUpdate.SetBounds(700, 74, 120, 22)
+	chkLiveUpdate.SetBounds(680, 74, 100, 22)
 	chkLiveUpdate.SetText("Live Update")
 	chkLiveUpdate.SetChecked(true)
 	window.Add(chkLiveUpdate)
 
-	chkLiveMic := wui.NewCheckBox()
-	chkLiveMic.SetBounds(825, 74, 105, 22)
-	chkLiveMic.SetText("Live Mic")
-	chkLiveMic.SetChecked(appCfg.UseLiveMic)
-	window.Add(chkLiveMic)
+	btnStartLiveMic := wui.NewButton()
+	btnStartLiveMic.SetBounds(790, 72, 70, 26)
+	btnStartLiveMic.SetText("🎙️ Start")
+	window.Add(btnStartLiveMic)
+
+	btnStopLiveMic := wui.NewButton()
+	btnStopLiveMic.SetBounds(865, 72, 65, 26)
+	btnStopLiveMic.SetText("🛑 Stop")
+	btnStopLiveMic.SetEnabled(false)
+	window.Add(btnStopLiveMic)
+
+	// Initialize button state based on appCfg
+	if appCfg.UseLiveMic {
+		startLiveMicCapture()
+		btnStartLiveMic.SetEnabled(false)
+		btnStopLiveMic.SetEnabled(true)
+	} else {
+		btnStartLiveMic.SetEnabled(true)
+		btnStopLiveMic.SetEnabled(false)
+	}
+
+	btnStartLiveMic.SetOnClick(func() {
+		startLiveMicCapture()
+		btnStartLiveMic.SetEnabled(false)
+		btnStopLiveMic.SetEnabled(true)
+		appCfg.UseLiveMic = true
+		
+		// Save config
+		var durSec int
+		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+		saveConfig(AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    txtMsg.Text(),
+			BackgroundImage: txtBg.Text(),
+			RTMPURL:         txtRtmp.Text(),
+			OutputFile:      txtOut.Text(),
+			ExternalAudio:   txtExternalAudio.Text(),
+			ExternalAudio2:  txtExternalAudio2.Text(),
+			Duration:        durSec,
+			VisualizerMode:  visualizerMode,
+			UseLiveMic:      true,
+		})
+		lblStatus.SetText("Live Mic started.")
+	})
+
+	btnStopLiveMic.SetOnClick(func() {
+		stopLiveMicCapture()
+		btnStartLiveMic.SetEnabled(true)
+		btnStopLiveMic.SetEnabled(false)
+		appCfg.UseLiveMic = false
+		
+		// Save config
+		var durSec int
+		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+		saveConfig(AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    txtMsg.Text(),
+			BackgroundImage: txtBg.Text(),
+			RTMPURL:         txtRtmp.Text(),
+			OutputFile:      txtOut.Text(),
+			ExternalAudio:   txtExternalAudio.Text(),
+			ExternalAudio2:  txtExternalAudio2.Text(),
+			Duration:        durSec,
+			VisualizerMode:  visualizerMode,
+			UseLiveMic:      false,
+		})
+		lblStatus.SetText("Live Mic stopped.")
+	})
 
 	btnGenerate := wui.NewButton()
 	btnGenerate.SetBounds(500, 103, 180, 26)
@@ -2689,9 +2861,114 @@ func runGUI() {
 	window.Add(btnAudioSettings)
 
 	paintBox := wui.NewPaintBox()
-	paintBox.SetBounds(20, 135, 910, 220)
+	paintBox.SetBounds(20, 135, 680, 220)
 	window.Add(paintBox)
 	globalPaintBox = paintBox
+
+	secPaintBox := wui.NewPaintBox()
+	secPaintBox.SetBounds(710, 135, 220, 220)
+	window.Add(secPaintBox)
+
+	secPaintBox.SetOnPaint(func(canvas *wui.Canvas) {
+		w, h := secPaintBox.Width(), secPaintBox.Height()
+		
+		// Background
+		canvas.FillRect(0, 0, w, h, wui.RGB(8, 12, 18))
+		
+		// division line
+		canvas.Line(0, h/2, w, h/2, wui.RGB(20, 28, 40))
+		
+		// --- TOP HALF: LIVE MIC ---
+		centerY1 := h / 4
+		canvas.Line(0, centerY1, w, centerY1, wui.RGB(15, 22, 32))
+		canvas.TextOut(8, 6, "LIVE MIC", wui.RGB(80, 100, 120))
+		
+		liveMicMutex.RLock()
+		micActive := liveMicCancel != nil
+		var micSamples []float64
+		if len(liveMicData) > 0 {
+			micSamples = make([]float64, len(liveMicData))
+			copy(micSamples, liveMicData)
+		}
+		liveMicMutex.RUnlock()
+		
+		if micActive && len(micSamples) > 0 {
+			numDraw := 1000
+			if len(micSamples) < numDraw {
+				numDraw = len(micSamples)
+			}
+			drawData := micSamples[len(micSamples)-numDraw:]
+			
+			step := float64(numDraw) / float64(w)
+			for i := 0; i < w-1; i++ {
+				idx1 := int(float64(i) * step)
+				idx2 := int(float64(i+1) * step)
+				if idx2 >= len(drawData) {
+					idx2 = len(drawData) - 1
+				}
+				
+				maxAmp := 0.0
+				for idx := idx1; idx <= idx2; idx++ {
+					if absVal := math.Abs(drawData[idx]); absVal > maxAmp {
+						maxAmp = absVal
+					}
+				}
+				
+				lineHeight := int(maxAmp * float64(centerY1-5))
+				y1 := centerY1 - lineHeight
+				y2 := centerY1 + lineHeight
+				canvas.Line(i, y1, i, y2, wui.RGB(0, 229, 163))
+			}
+		} else {
+			canvas.TextOut(w/2-30, centerY1-8, "OFFLINE", wui.RGB(100, 110, 120))
+		}
+		
+		// --- BOTTOM HALF: BROADCAST ---
+		centerY2 := 3 * h / 4
+		canvas.Line(0, centerY2, w, centerY2, wui.RGB(15, 22, 32))
+		canvas.TextOut(8, h/2+6, "BROADCAST", wui.RGB(80, 100, 120))
+		
+		broadcastMutex.RLock()
+		var bcastSamples []float64
+		if len(broadcastData) > 0 {
+			bcastSamples = make([]float64, len(broadcastData))
+			copy(bcastSamples, broadcastData)
+		}
+		broadcastMutex.RUnlock()
+		
+		activeBcast := playbackController.IsPlaying() || isStreaming
+		
+		if activeBcast && len(bcastSamples) > 0 {
+			numDraw := 1000
+			if len(bcastSamples) < numDraw {
+				numDraw = len(bcastSamples)
+			}
+			drawData := bcastSamples[len(bcastSamples)-numDraw:]
+			
+			step := float64(numDraw) / float64(w)
+			for i := 0; i < w-1; i++ {
+				idx1 := int(float64(i) * step)
+				idx2 := int(float64(i+1) * step)
+				if idx2 >= len(drawData) {
+					idx2 = len(drawData) - 1
+				}
+				
+				maxAmp := 0.0
+				for idx := idx1; idx <= idx2; idx++ {
+					if absVal := math.Abs(drawData[idx]); absVal > maxAmp {
+						maxAmp = absVal
+					}
+				}
+				
+				lineHeight := int(maxAmp * float64(h/4-5))
+				y1 := centerY2 - lineHeight
+				y2 := centerY2 + lineHeight
+				canvas.Line(i, y1, i, y2, wui.RGB(255, 128, 0))
+			}
+		} else {
+			canvas.TextOut(w/2-30, centerY2-8, "STANDBY", wui.RGB(100, 110, 120))
+		}
+	})
 
 	btnPlayPause := wui.NewButton()
 	btnPlayPause.SetBounds(20, 365, 130, 40)
@@ -2734,7 +3011,6 @@ func runGUI() {
 	btnStream.SetFont(font)
 	window.Add(btnStream)
 
-	lblStatus := wui.NewLabel()
 	lblStatus.SetBounds(20, 415, 910, 50)
 	lblStatus.SetText("System Ready. Configure audio effects and generate Morse payload.")
 	window.Add(lblStatus)
@@ -2855,7 +3131,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
-					UseLiveMic:      chkLiveMic.Checked(),
+					UseLiveMic:      appCfg.UseLiveMic,
 				})
 			})
 		}()
@@ -2915,7 +3191,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					ExternalAudio2:  txtExternalAudio2.Text(),
 					Duration:        durSec,
 					VisualizerMode:  visualizerMode,
-					UseLiveMic:      chkLiveMic.Checked(),
+					UseLiveMic:      appCfg.UseLiveMic,
 				})
 			})
 		}()
@@ -3135,7 +3411,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
-			UseLiveMic:      chkLiveMic.Checked(),
+			UseLiveMic:      appCfg.UseLiveMic,
 		})
 	})
 
@@ -3248,7 +3524,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			ExternalAudio2:  txtExternalAudio2.Text(),
 			Duration:        durSec,
 			VisualizerMode:  visualizerMode,
-			UseLiveMic:      chkLiveMic.Checked(),
+			UseLiveMic:      appCfg.UseLiveMic,
 		})
 
 		if _, err := os.Stat(bgPath); os.IsNotExist(err) {
@@ -3268,7 +3544,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			AudioBitrate:    "128k",
 			Duration:        durSec,
 			OutputFile:      strings.TrimSpace(txtOut.Text()),
-			UseLiveMic:      chkLiveMic.Checked(),
+			UseLiveMic:      appCfg.UseLiveMic,
 		}
 
 		if cfg.RTMPURL == "" && cfg.OutputFile == "" {
@@ -3569,6 +3845,17 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 
 		recordWin.ShowModal()
 	})
+
+	// Background ticker for the real-time split-screen visualizer (secPaintBox)
+	go func() {
+		ticker := time.NewTicker(40 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			updateUI(func() {
+				secPaintBox.Paint()
+			})
+		}
+	}()
 
 	window.Show()
 }
