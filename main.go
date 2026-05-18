@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -3339,27 +3341,87 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 
 		recordWin := wui.NewWindow()
 		recordWin.SetTitle("Recording Voice...")
-		recordWin.SetInnerWidth(300)
-		recordWin.SetInnerHeight(150)
+		recordWin.SetInnerWidth(450)
+		recordWin.SetInnerHeight(260)
 		recordWin.SetResizable(false)
 		recordWin.SetHasMaxButton(false)
 		recordWin.SetFont(font)
-		recordWin.SetInnerPosition(window.X()+300, window.Y()+150)
+		recordWin.SetInnerPosition(window.X()+250, window.Y()+100)
 
 		lblRecStatus := wui.NewLabel()
-		lblRecStatus.SetBounds(20, 20, 260, 25)
+		lblRecStatus.SetBounds(20, 15, 410, 25)
 		lblRecStatus.SetText("● RECORDING LIVE VOICE")
 		recordWin.Add(lblRecStatus)
 
 		lblRecTimer := wui.NewLabel()
-		lblRecTimer.SetBounds(20, 50, 260, 25)
+		lblRecTimer.SetBounds(20, 45, 410, 25)
 		lblRecTimer.SetText("Duration: 0.0s")
 		recordWin.Add(lblRecTimer)
 
+		recPaintBox := wui.NewPaintBox()
+		recPaintBox.SetBounds(20, 80, 410, 100)
+		recordWin.Add(recPaintBox)
+
 		btnStopRec := wui.NewButton()
-		btnStopRec.SetBounds(20, 85, 260, 30)
+		btnStopRec.SetBounds(20, 200, 410, 35)
 		btnStopRec.SetText("⏹ Stop & Save")
 		recordWin.Add(btnStopRec)
+
+		var recordedSamples []float64
+		var recordedSamplesMutex sync.RWMutex
+
+		recPaintBox.SetOnPaint(func(canvas *wui.Canvas) {
+			w, h := recPaintBox.Width(), recPaintBox.Height()
+			canvas.FillRect(0, 0, w, h, wui.RGB(8, 12, 18))
+
+			centerY := h / 2
+			canvas.Line(0, centerY, w, centerY, wui.RGB(30, 40, 55))
+
+			recordedSamplesMutex.RLock()
+			totalSamples := len(recordedSamples)
+			visSamples := 2000
+			if totalSamples < visSamples {
+				visSamples = totalSamples
+			}
+
+			if visSamples > 0 {
+				samplesSlice := recordedSamples[totalSamples-visSamples:]
+				recordedSamplesMutex.RUnlock()
+
+				step := float64(visSamples) / float64(w)
+				if step < 1 {
+					step = 1
+				}
+
+				for i := 0; i < w-1; i++ {
+					startIdx := int(float64(i) * step)
+					endIdx := int(float64(i+1) * step)
+					if endIdx > len(samplesSlice) {
+						endIdx = len(samplesSlice)
+					}
+					if startIdx >= len(samplesSlice) {
+						break
+					}
+
+					maxVal := 0.0
+					for idx := startIdx; idx < endIdx; idx++ {
+						val := math.Abs(samplesSlice[idx])
+						if val > maxVal {
+							maxVal = val
+						}
+					}
+
+					lineHeight := int(maxVal * float64(centerY-5))
+					y1 := centerY - lineHeight
+					y2 := centerY + lineHeight
+
+					canvas.Line(i, y1, i, y2, wui.RGB(0, 180, 150))
+				}
+			} else {
+				recordedSamplesMutex.RUnlock()
+				canvas.TextOut(w/2-50, h/2-8, "Waiting for audio...", wui.RGB(100, 120, 140))
+			}
+		})
 
 		recCtx, recCancel := context.WithCancel(context.Background())
 		micDev := getDefaultDshowAudioDevice()
@@ -3368,11 +3430,19 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			recCancel()
 			return
 		}
-		cmd := exec.CommandContext(recCtx, "ffmpeg", "-f", "dshow", "-i", "audio="+micDev, "-y", "mic_record.wav")
+
+		cmd := exec.CommandContext(recCtx, "ffmpeg", "-f", "dshow", "-i", "audio="+micDev, "-f", "s16le", "-ac", "1", "-ar", "44100", "-")
 		
 		stdinPipe, err := cmd.StdinPipe()
 		if err != nil {
 			wui.MessageBoxError("Error", "Failed to create stdin pipe for recorder: " + err.Error())
+			recCancel()
+			return
+		}
+
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			wui.MessageBoxError("Error", "Failed to create stdout pipe for recorder: " + err.Error())
 			recCancel()
 			return
 		}
@@ -3384,8 +3454,37 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			return
 		}
 
+		go func() {
+			reader := bufio.NewReader(stdoutPipe)
+			localBuf := make([]float64, 0, 1024)
+			var sampleBuf [2]byte
+
+			for {
+				_, err := io.ReadFull(reader, sampleBuf[:])
+				if err != nil {
+					break
+				}
+				val := int16(binary.LittleEndian.Uint16(sampleBuf[:]))
+				sample := float64(val) / 32767.0
+				localBuf = append(localBuf, sample)
+
+				if len(localBuf) >= 1024 {
+					recordedSamplesMutex.Lock()
+					recordedSamples = append(recordedSamples, localBuf...)
+					recordedSamplesMutex.Unlock()
+					localBuf = localBuf[:0]
+				}
+			}
+
+			if len(localBuf) > 0 {
+				recordedSamplesMutex.Lock()
+				recordedSamples = append(recordedSamples, localBuf...)
+				recordedSamplesMutex.Unlock()
+			}
+		}()
+
 		startTime := time.Now()
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(40 * time.Millisecond)
 		pulseState := true
 
 		go func() {
@@ -3398,12 +3497,15 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					elapsed := time.Since(startTime).Seconds()
 					updateUI(func() {
 						lblRecTimer.SetText(fmt.Sprintf("Duration: %.1fs", elapsed))
-						if pulseState {
-							lblRecStatus.SetText("  RECORDING LIVE VOICE")
-						} else {
-							lblRecStatus.SetText("● RECORDING LIVE VOICE")
+						if int(elapsed*10)%10 == 0 {
+							if pulseState {
+								lblRecStatus.SetText("  RECORDING LIVE VOICE")
+							} else {
+								lblRecStatus.SetText("● RECORDING LIVE VOICE")
+							}
+							pulseState = !pulseState
 						}
-						pulseState = !pulseState
+						recPaintBox.Paint()
 					})
 				}
 			}
@@ -3429,14 +3531,25 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 			ticker.Stop()
 			time.Sleep(100 * time.Millisecond)
 
+			recordedSamplesMutex.RLock()
+			samplesToSave := make([]float64, len(recordedSamples))
+			copy(samplesToSave, recordedSamples)
+			recordedSamplesMutex.RUnlock()
+
+			saveErr := writeWavFile("mic_record.wav", samplesToSave, sampleRate)
+
 			updateUI(func() {
 				recordWin.Close()
-				if _, err := os.Stat("mic_record.wav"); err == nil {
+				if saveErr == nil && len(samplesToSave) > 0 {
 					txtExternalAudio.SetText("mic_record.wav")
 					lblStatus.SetText("Successfully recorded microphone! Loaded into External Audio.")
 					generateAudio()
 				} else {
-					lblStatus.SetText("Recording ended, but audio file could not be generated.")
+					if saveErr != nil {
+						lblStatus.SetText("Recording ended, but WAV generation failed: " + saveErr.Error())
+					} else {
+						lblStatus.SetText("Recording ended, but no audio samples were captured.")
+					}
 				}
 			})
 		}
