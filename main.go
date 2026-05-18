@@ -2848,10 +2848,10 @@ func showASCIIPainterDialog(
 	editorWindow := wui.NewWindow()
 	editorWindow.SetInnerPosition(parent.X()+40, parent.Y()+40)
 	editorWindow.SetInnerWidth(800)
-	editorWindow.SetInnerHeight(490)
+	editorWindow.SetInnerHeight(460)
 	editorWindow.SetResizable(false)
 	editorWindow.SetHasMaxButton(false)
-	editorWindow.SetTitle("🎨 ASCII Spectrogram Painter")
+	editorWindow.SetTitle("ASCII Spectrogram Painter")
 
 	font, _ := wui.NewFont(wui.FontDesc{Name: "Segoe UI", Height: -12})
 	editorWindow.SetFont(font)
@@ -2865,40 +2865,36 @@ func showASCIIPainterDialog(
 	textEdit.SetFont(monoFont)
 	editorWindow.Add(textEdit)
 
-	defaultArt := `#   #  ###  #####  #####  #####  ####  
-#   #   #      #      #   #      #   # 
-#####   #     #      #    ###    ####  
-#   #   #    #      #     #      #  #  
-#   #  ###  #####  #####  #####  #   # `
+	defaultArt := ".:-=+*#%@"
 	textEdit.SetText(defaultArt)
 
 	btnGenerate := wui.NewButton()
-	btnGenerate.SetBounds(10, 425, 110, 32)
+	btnGenerate.SetBounds(10, 420, 110, 32)
 	btnGenerate.SetText("Generate")
 	editorWindow.Add(btnGenerate)
 
 	btnPlayStop := wui.NewButton()
-	btnPlayStop.SetBounds(130, 425, 110, 32)
-	btnPlayStop.SetText("▶ Play")
+	btnPlayStop.SetBounds(130, 420, 110, 32)
+	btnPlayStop.SetText("Play")
 	editorWindow.Add(btnPlayStop)
 
 	btnGenExt1 := wui.NewButton()
-	btnGenExt1.SetBounds(250, 425, 110, 32)
+	btnGenExt1.SetBounds(250, 420, 110, 32)
 	btnGenExt1.SetText("Gen. Ext1")
 	editorWindow.Add(btnGenExt1)
 
 	btnGenExt2 := wui.NewButton()
-	btnGenExt2.SetBounds(370, 425, 110, 32)
+	btnGenExt2.SetBounds(370, 420, 110, 32)
 	btnGenExt2.SetText("Gen. Ext2")
 	editorWindow.Add(btnGenExt2)
 
 	btnImportImage := wui.NewButton()
-	btnImportImage.SetBounds(490, 425, 140, 32)
-	btnImportImage.SetText("🖼️ Image to ASCII")
+	btnImportImage.SetBounds(490, 420, 140, 32)
+	btnImportImage.SetText("Image to ASCII")
 	editorWindow.Add(btnImportImage)
 
 	btnClose := wui.NewButton()
-	btnClose.SetBounds(640, 425, 150, 32)
+	btnClose.SetBounds(640, 420, 150, 32)
 	btnClose.SetText("Close")
 	editorWindow.Add(btnClose)
 
@@ -2946,7 +2942,7 @@ func showASCIIPainterDialog(
 
 			updateUI(func() {
 				btnGenerate.SetEnabled(true)
-				btnVisMode.SetText("🌊 Waterfall Mode")
+				btnVisMode.SetText("Waterfall")
 
 				// Repaint and trigger visualizer recalculation
 				paintBox.Paint()
@@ -2969,15 +2965,15 @@ func showASCIIPainterDialog(
 		}
 
 		if !playbackController.IsPlaying() {
-			btnPlayStop.SetText("⏹ Stop")
+			btnPlayStop.SetText("Stop")
 			lblStatus.SetText("Playing ASCII Spectrogram audio...")
-			btnPlayPause.SetText("⏸ Pause")
+			btnPlayPause.SetText("Pause")
 			btnStop.SetEnabled(true)
 
 			playbackController.Play(samples, func() {
 				updateUI(func() {
-					btnPlayStop.SetText("▶ Play")
-					btnPlayPause.SetText("▶ Play")
+					btnPlayStop.SetText("Play")
+					btnPlayPause.SetText("Play")
 					btnStop.SetEnabled(false)
 					lblStatus.SetText("ASCII Spectrogram playback completed.")
 				})
@@ -2985,8 +2981,8 @@ func showASCIIPainterDialog(
 		} else {
 			playbackController.Stop()
 			updateUI(func() {
-				btnPlayStop.SetText("▶ Play")
-				btnPlayPause.SetText("▶ Play")
+				btnPlayStop.SetText("Play")
+				btnPlayPause.SetText("Play")
 				btnStop.SetEnabled(false)
 				lblStatus.SetText("Playback stopped.")
 			})
@@ -3020,7 +3016,7 @@ func showASCIIPainterDialog(
 
 			updateUI(func() {
 				btnGenExt1.SetEnabled(true)
-				btnVisMode.SetText("🌊 Waterfall Mode")
+				btnVisMode.SetText("Waterfall")
 				paintBox.Paint()
 				refreshVisualizer()
 
@@ -3063,7 +3059,7 @@ func showASCIIPainterDialog(
 
 			updateUI(func() {
 				btnGenExt2.SetEnabled(true)
-				btnVisMode.SetText("🌊 Waterfall Mode")
+				btnVisMode.SetText("Waterfall")
 				paintBox.Paint()
 				refreshVisualizer()
 
@@ -3310,21 +3306,21 @@ func runGUI() {
 
 	btnAudioSettings := wui.NewButton()
 	btnAudioSettings.SetBounds(650, 103, 140, 26)
-	btnAudioSettings.SetText("🎛️ Settings")
+	btnAudioSettings.SetText("Settings")
 	window.Add(btnAudioSettings)
 
 	btnASCIIPainter := wui.NewButton()
 	btnASCIIPainter.SetBounds(800, 103, 130, 26)
-	btnASCIIPainter.SetText("🎨 ASCII Paint")
+	btnASCIIPainter.SetText("ASCII Paint")
 	window.Add(btnASCIIPainter)
 
 	paintBox := wui.NewPaintBox()
-	paintBox.SetBounds(20, 135, 680, 220)
+	paintBox.SetBounds(20, 135, 680, 290)
 	window.Add(paintBox)
 	globalPaintBox = paintBox
 
 	secPaintBox := wui.NewPaintBox()
-	secPaintBox.SetBounds(710, 135, 220, 220)
+	secPaintBox.SetBounds(710, 135, 220, 290)
 	window.Add(secPaintBox)
 
 	secPaintBox.SetOnPaint(func(canvas *wui.Canvas) {
@@ -3429,47 +3425,49 @@ func runGUI() {
 	})
 
 	btnPlayPause := wui.NewButton()
-	btnPlayPause.SetBounds(20, 365, 130, 40)
-	btnPlayPause.SetText("▶ Play")
+	btnPlayPause.SetBounds(20, 430, 60, 30)
+	btnPlayPause.SetText("Play")
 	window.Add(btnPlayPause)
 	
 	btnStop := wui.NewButton()
-	btnStop.SetBounds(160, 365, 90, 40)
-	btnStop.SetText("⏹ Stop")
+	btnStop.SetBounds(90, 430, 60, 30)
+	btnStop.SetText("Stop")
 	btnStop.SetEnabled(false)
 	window.Add(btnStop)
 
 	btnZoomIn := wui.NewButton()
-	btnZoomIn.SetBounds(260, 365, 80, 40)
-	btnZoomIn.SetText("Zoom In")
+	btnZoomIn.SetBounds(160, 430, 60, 30)
+	btnZoomIn.SetText("Zoom (+)")
 	window.Add(btnZoomIn)
 
 	btnZoomOut := wui.NewButton()
-	btnZoomOut.SetBounds(350, 365, 80, 40)
-	btnZoomOut.SetText("Zoom Out")
+	btnZoomOut.SetBounds(230, 430, 60, 30)
+	btnZoomOut.SetText("Zoom (-)")
 	window.Add(btnZoomOut)
 
 	btnResetZoom := wui.NewButton()
-	btnResetZoom.SetBounds(440, 365, 60, 40)
+	btnResetZoom.SetBounds(300, 430, 60, 30)
 	btnResetZoom.SetText("Reset")
 	window.Add(btnResetZoom)
 
 	btnVisMode := wui.NewButton()
-	btnVisMode.SetBounds(510, 365, 140, 40)
-	if visualizerMode == 1 {
-		btnVisMode.SetText("📊 Spectrum Mode")
+	btnVisMode.SetBounds(370, 430, 80, 30)
+	if visualizerMode == 0 {
+		btnVisMode.SetText("Waveform")
+	} else if visualizerMode == 1 {
+		btnVisMode.SetText("Spectrum")
 	} else {
-		btnVisMode.SetText("📈 Waveform Mode")
+		btnVisMode.SetText("Waterfall")
 	}
 	window.Add(btnVisMode)
 
 	btnStream := wui.NewButton()
-	btnStream.SetBounds(660, 365, 270, 40)
-	btnStream.SetText("🚀 Launch Transmit Chain")
+	btnStream.SetBounds(830, 430, 100, 30)
+	btnStream.SetText("Start Broadcast")
 	btnStream.SetFont(font)
 	window.Add(btnStream)
 
-	lblStatus.SetBounds(20, 415, 910, 50)
+	lblStatus.SetBounds(20, 465, 800, 15)
 	lblStatus.SetText("System Ready. Configure audio effects and generate Morse payload.")
 	window.Add(lblStatus)
 
@@ -3614,60 +3612,21 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 
 	btnAudioSettings.SetOnClick(func() {
 		showAudioSettingsDialog(window)
-		btnGenerate.SetEnabled(false)
-		lblStatus.SetText("Applying new audio settings...")
-		
-		go func() {
-			morseStr := textToMorse(txtMsg.Text())
-			newSamples := generateAudioBuffers(morseStr, strings.TrimSpace(txtExternalAudio.Text()), strings.TrimSpace(txtExternalAudio2.Text()))
-			
-			updateUI(func() {
-				audioMutex.Lock()
-				audioSamples = newSamples
-				if chkLiveUpdate.Checked() {
-					audioVersion++
-				}
-				
-				// 1. Force clear the active visualizer data to trigger the "Generating..." loading text
-				if visualizerMode == 0 {
-					waveformData = nil
-				} else if visualizerMode == 1 {
-					spectrumData = nil
-				} else if visualizerMode == 2 {
-					waterfallData = nil
-				}
-				
-				// 2. Mark all visualizers as needing recalculation
-				waveformDirty = true
-				spectrumDirty = true
-				waterfallDirty = true
-				audioMutex.Unlock()
-				
-				// 3. Paint immediately to show the blank / loading state
-				paintBox.Paint()
-				
-				// 4. Kick off the background calculation (it will repaint when finished)
-				refreshVisualizer() 
-
-				btnGenerate.SetEnabled(true)
-				lblStatus.SetText("Audio generated. Total duration: " + fmt.Sprintf("%.2f", float64(len(audioSamples))/float64(sampleRate)) + " seconds")
-
-				var durSec int
-				fmt.Sscanf(txtDur.Text(), "%d", &durSec)
-				saveConfig(AppConfig{
-					Processor:       *audioProc,
-					MorseMessage:    txtMsg.Text(),
-					BackgroundImage: txtBg.Text(),
-					RTMPURL:         txtRtmp.Text(),
-					OutputFile:      txtOut.Text(),
-					ExternalAudio:   txtExternalAudio.Text(),
-					ExternalAudio2:  txtExternalAudio2.Text(),
-					Duration:        durSec,
-					VisualizerMode:  visualizerMode,
-					UseLiveMic:      appCfg.UseLiveMic,
-				})
-			})
-		}()
+		// Save config without regenerating audio
+		var durSec int
+		fmt.Sscanf(txtDur.Text(), "%d", &durSec)
+		saveConfig(AppConfig{
+			Processor:       *audioProc,
+			MorseMessage:    txtMsg.Text(),
+			BackgroundImage: txtBg.Text(),
+			RTMPURL:         txtRtmp.Text(),
+			OutputFile:      txtOut.Text(),
+			ExternalAudio:   txtExternalAudio.Text(),
+			ExternalAudio2:  txtExternalAudio2.Text(),
+			Duration:        durSec,
+			VisualizerMode:  visualizerMode,
+			UseLiveMic:      appCfg.UseLiveMic,
+		})
 	})
 
 	paintBox.SetOnPaint(func(canvas *wui.Canvas) {
@@ -3860,13 +3819,13 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 	btnVisMode.SetOnClick(func() {
 		if visualizerMode == 0 {
 			visualizerMode = 1
-			btnVisMode.SetText("📊 Spectrum Mode")
+			btnVisMode.SetText("Spectrum")
 		} else if visualizerMode == 1 {
 			visualizerMode = 2
-			btnVisMode.SetText("🌊 Waterfall Mode")
+			btnVisMode.SetText("Waterfall")
 		} else {
 			visualizerMode = 0
-			btnVisMode.SetText("📈 Waveform Mode")
+			btnVisMode.SetText("Waveform")
 		}
 		
 		paintBox.Paint()      // Repaint immediately to clear old visualizer
@@ -3917,11 +3876,11 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 		if !playbackController.IsPlaying() {
 			btnStop.SetEnabled(true)
 			lblStatus.SetText("Playing audio...")
-			btnPlayPause.SetText("⏸ Pause")
+			btnPlayPause.SetText("Pause")
 			
 			playbackController.Play(samples, func() {
 				updateUI(func() {
-					btnPlayPause.SetText("▶ Play")
+					btnPlayPause.SetText("Play")
 					btnStop.SetEnabled(false)
 					lblStatus.SetText("Playback completed.")
 				})
@@ -3929,11 +3888,11 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 		} else {
 			if playbackController.IsPaused() {
 				playbackController.Resume()
-				btnPlayPause.SetText("⏸ Pause")
+				btnPlayPause.SetText("Pause")
 				lblStatus.SetText("Playback resumed.")
 			} else {
 				playbackController.Pause()
-				btnPlayPause.SetText("▶ Resume")
+				btnPlayPause.SetText("Resume")
 				lblStatus.SetText("Playback paused.")
 			}
 		}
@@ -3942,7 +3901,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 	btnStop.SetOnClick(func() {
 		if playbackController.IsPlaying() {
 			playbackController.Stop()
-			btnPlayPause.SetText("▶ Play")
+			btnPlayPause.SetText("Play")
 			btnStop.SetEnabled(false)
 			lblStatus.SetText("Playback stopped.")
 		}
@@ -4029,7 +3988,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 		streamCancel = cancel
 		isStreaming = true
 
-		btnStream.SetText("🛑 Stop Broadcasting")
+		btnStream.SetText("Stop Broadcast")
 		lblStatus.SetText("Broadcasting...")
 
 		go func() {
@@ -4039,7 +3998,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 					updateUI(func() {
 						isStreaming = false
 						lblStatus.SetText("Broadcast stopped.")
-						btnStream.SetText("🚀 Launch Transmit Chain")
+						btnStream.SetText("Start Broadcast")
 					})
 					return
 				default:
@@ -4049,7 +4008,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 						updateUI(func() {
 							isStreaming = false
 							lblStatus.SetText("Broadcast stopped.")
-							btnStream.SetText("🚀 Launch Transmit Chain")
+							btnStream.SetText("Start Broadcast")
 						})
 						return
 					}
@@ -4063,7 +4022,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 							updateUI(func() {
 								isStreaming = false
 								lblStatus.SetText("Broadcast stopped.")
-								btnStream.SetText("🚀 Launch Transmit Chain")
+								btnStream.SetText("Start Broadcast")
 							})
 							return
 						case <-time.After(3 * time.Second):
@@ -4072,7 +4031,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 						updateUI(func() {
 							isStreaming = false
 							lblStatus.SetText("Broadcast completed.")
-							btnStream.SetText("🚀 Launch Transmit Chain")
+							btnStream.SetText("Start Broadcast")
 						})
 						return
 					}
@@ -4084,7 +4043,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 	btnRecordMic.SetOnClick(func() {
 		if playbackController.IsPlaying() {
 			playbackController.Stop()
-			btnPlayPause.SetText("▶ Play")
+			btnPlayPause.SetText("Play")
 			btnStop.SetEnabled(false)
 		}
 
