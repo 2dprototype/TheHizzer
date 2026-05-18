@@ -1487,6 +1487,15 @@ func getDefaultDshowAudioDevice() string {
 
 // --- Media Pipeline Control Engine ---
 
+func hasAudioStream(filePath string) bool {
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return len(strings.TrimSpace(string(out))) > 0
+}
+
 func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	var args []string
 	
@@ -1509,10 +1518,23 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	)
 
 	// Unified mapping for both video and image backgrounds
-	args = append(args,
-		"-map", "0:v", "-map", "1:a",
-		"-af", "aresample=44100",
-	)
+	hasAudio := false
+	if isVid {
+		hasAudio = hasAudioStream(cfg.BackgroundImage)
+	}
+
+	if isVid && hasAudio {
+		// Use filter complex to mix video audio and pipe audio
+		args = append(args,
+			"-filter_complex", "[0:a]aresample=44100[a0];[1:a]aresample=44100[a1];[a0][a1]amix=inputs=2:dropout_transition=0,volume=2[a]",
+			"-map", "0:v", "-map", "[a]",
+		)
+	} else {
+		args = append(args,
+			"-map", "0:v", "-map", "1:a",
+			"-af", "aresample=44100",
+		)
+	}
 
 	if cfg.Duration > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", cfg.Duration))
@@ -4072,7 +4094,7 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 
 		btnStopRec := wui.NewButton()
 		btnStopRec.SetBounds(20, 200, 410, 35)
-		btnStopRec.SetText("⏹ Stop & Save")
+		btnStopRec.SetText("Stop & Save")
 		recordWin.Add(btnStopRec)
 
 		var recordedSamples []float64
