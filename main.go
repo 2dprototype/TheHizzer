@@ -1529,6 +1529,11 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	
+	// Open log file to record any ffmpeg standard error
+	errFile, _ := os.Create("ffmpeg_stream_error.log")
+	cmd.Stderr = errFile
+	defer errFile.Close()
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -1541,43 +1546,27 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 	go func() {
 		defer stdin.Close()
 		
+		ticker := time.NewTicker(23219 * time.Microsecond) // ~23.22 ms for 1024 samples at 44100Hz
+		defer ticker.Stop()
+
 		pos := 0
 		chunkSize := 1024
 		buf := make([]byte, chunkSize*2)
-		
-		currentVersion := -1
-		var activeSamples []float64
 		
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			default:
+			case <-ticker.C:
 				audioMutex.RLock()
-				globalSamples := audioSamples
-				version := audioVersion
+				activeSamples := audioSamples
 				audioMutex.RUnlock()
-				
-				if version != currentVersion || len(activeSamples) == 0 {
-					currentVersion = version
-					if len(globalSamples) > 0 {
-						activeSamples = make([]float64, len(globalSamples))
-						copy(activeSamples, globalSamples)
-					} else {
-						activeSamples = nil
-					}
-					pos = 0
-				}
-				
-				if len(activeSamples) == 0 {
-					time.Sleep(10 * time.Millisecond)
-					continue
-				}
 
-				// Consume mic samples from queue in Go if UseLiveMic is enabled
+				// Read mic samples if the live mic is actively captured (dynamically toggled live)
 				micSamples := make([]float64, chunkSize)
-				if cfg.UseLiveMic {
-					liveMicMutex.Lock()
+				liveMicMutex.Lock()
+				micActive := liveMicCancel != nil
+				if micActive {
 					n := len(liveMicQueue)
 					if n > 0 {
 						if n >= chunkSize {
@@ -1588,28 +1577,33 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 							liveMicQueue = nil
 						}
 					}
-					liveMicMutex.Unlock()
 				}
+				liveMicMutex.Unlock()
 				
-				// Capture raw broadcast samples for visualizer
+				// Broadcast samples buffer for the visualizer
 				bcastSamples := make([]float64, chunkSize)
 				
 				for i := 0; i < chunkSize; i++ {
-					sampleIdx := (pos + i) % len(activeSamples)
-					bcastSamples[i] = activeSamples[sampleIdx]
+					var morseVal float64
+					if len(activeSamples) > 0 {
+						sampleIdx := (pos + i) % len(activeSamples)
+						morseVal = activeSamples[sampleIdx]
+					}
 					
-					mixedSample := activeSamples[sampleIdx] + micSamples[i]
+					mixedSample := morseVal + micSamples[i]
 					if mixedSample > 1.0 {
 						mixedSample = 1.0
 					} else if mixedSample < -1.0 {
 						mixedSample = -1.0
 					}
 					
+					bcastSamples[i] = mixedSample
+					
 					val := int16(mixedSample * 32767.0)
 					binary.LittleEndian.PutUint16(buf[i*2:], uint16(val))
 				}
 				
-				// Update broadcast monitor buffer
+				// Update broadcast monitor buffer for secPaintBox
 				broadcastMutex.Lock()
 				broadcastData = append(broadcastData, bcastSamples...)
 				if len(broadcastData) > 4096 {
@@ -1617,7 +1611,9 @@ func executeStreamPipeline(ctx context.Context, cfg Config) error {
 				}
 				broadcastMutex.Unlock()
 				
-				pos = (pos + chunkSize) % len(activeSamples)
+				if len(activeSamples) > 0 {
+					pos = (pos + chunkSize) % len(activeSamples)
+				}
 				
 				_, err := stdin.Write(buf)
 				if err != nil {
@@ -2632,6 +2628,7 @@ func stopLiveMicCapture() {
 
 func runGUI() {
 	appCfg := loadConfig()
+	appCfg.UseLiveMic = false
 	*audioProc = appCfg.Processor
 	visualizerMode = appCfg.VisualizerMode
 
@@ -3819,7 +3816,6 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 				if saveErr == nil && len(samplesToSave) > 0 {
 					txtExternalAudio.SetText("mic_record.wav")
 					lblStatus.SetText("Successfully recorded microphone! Loaded into External Audio.")
-					generateAudio()
 				} else {
 					if saveErr != nil {
 						lblStatus.SetText("Recording ended, but WAV generation failed: " + saveErr.Error())
