@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"math/rand"
@@ -2468,8 +2471,8 @@ func showAudioSettingsDialog(parent *wui.Window) {
 	settingsWin.Add(sepFooter)
 
 	btnClose := wui.NewButton()
-	btnClose.SetBounds(10, 452, 120, 30)
-	btnClose.SetText("Apply & Close")
+	btnClose.SetBounds(10, 452, 60, 30)
+	btnClose.SetText("Apply")
 	settingsWin.Add(btnClose)
 
 	btnClose.SetOnClick(func() {
@@ -2624,6 +2627,424 @@ func stopLiveMicCapture() {
 	liveMicCmd = nil
 	liveMicData = nil
 	liveMicQueue = nil
+}
+
+func getCharAmplitude(char rune) float64 {
+	switch char {
+	case ' ', '\t', '\r', '\n':
+		return 0.0
+	case '.', ',', '-', '_', ':':
+		return 0.25
+	case '=', '+', '*', 'i', 'l', '!':
+		return 0.5
+	case '%', '&', 'W', 'M', '#', '@':
+		return 1.0
+	default:
+		return 0.8
+	}
+}
+
+func generateAudioFromASCII(art string) []float64 {
+	lines := strings.Split(art, "\n")
+	var cleanedLines []string
+	maxW := 0
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		cleanedLines = append(cleanedLines, line)
+		if len(line) > maxW {
+			maxW = len(line)
+		}
+	}
+
+	if maxW == 0 {
+		return make([]float64, sampleRate)
+	}
+
+	if maxW > 80 {
+		maxW = 80
+		for i, line := range cleanedLines {
+			if len(line) > 80 {
+				cleanedLines[i] = line[:80]
+			}
+		}
+	}
+
+	H := len(cleanedLines)
+	W := maxW
+	rowSamples := sampleRate / 20 // 50ms per row
+	totalSamples := H * rowSamples
+	samples := make([]float64, totalSamples)
+
+	// Precompute frequencies and phase steps
+	b_start := (80 - W) / 2
+	freqs := make([]float64, W)
+	phaseSteps := make([]float64, W)
+	for c := 0; c < W; c++ {
+		b := b_start + c
+		minFreq := 20.0
+		maxFreq := 12000.0
+		freqs[c] = minFreq * math.Pow(maxFreq/minFreq, float64(b)/80.0)
+		phaseSteps[c] = 2.0 * math.Pi * freqs[c] / float64(sampleRate)
+	}
+
+	// Setup amplitude matrix
+	amps := make([][]float64, H)
+	for r := 0; r < H; r++ {
+		amps[r] = make([]float64, W)
+		for c := 0; c < W; c++ {
+			if c < len(cleanedLines[r]) {
+				amps[r][c] = getCharAmplitude(rune(cleanedLines[r][c]))
+			} else {
+				amps[r][c] = 0.0
+			}
+		}
+	}
+
+	phases := make([]float64, W)
+
+	// Generate samples with smooth spline linear amplitude interpolation
+	for n := 0; n < totalSamples; n++ {
+		i := n / rowSamples // Segment index
+		r := H - 1 - i     // Played from bottom to top
+
+		m := n % rowSamples
+		p := float64(m) / float64(rowSamples)
+
+		// Next and previous segments
+		r_next := H - 1 - (i + 1)
+		r_prev := H - 1 - (i - 1)
+
+		var sum float64
+		for c := 0; c < W; c++ {
+			A_curr := amps[r][c]
+
+			var A_next float64
+			if i < H-1 {
+				A_next = amps[r_next][c]
+			}
+
+			var A_prev float64
+			if i > 0 {
+				A_prev = amps[r_prev][c]
+			}
+
+			var targetAmp float64
+			if p < 0.5 {
+				targetAmp = A_prev*(0.5-p)*2.0 + A_curr*(p*2.0)
+			} else {
+				targetAmp = A_curr*((1.0-p)*2.0) + A_next*((p-0.5)*2.0)
+			}
+
+			sum += targetAmp * math.Sin(phases[c])
+
+			// Keep phase running continuously
+			phases[c] += phaseSteps[c]
+			if phases[c] > 2.0*math.Pi {
+				phases[c] -= 2.0 * math.Pi
+			}
+		}
+		samples[n] = sum
+	}
+
+	// Normalize to prevent clipping (peak = 0.75)
+	maxVal := 0.0
+	for _, s := range samples {
+		absVal := math.Abs(s)
+		if absVal > maxVal {
+			maxVal = absVal
+		}
+	}
+	if maxVal > 0.0 {
+		scale := 0.75 / maxVal
+		for idx := range samples {
+			samples[idx] *= scale
+		}
+	}
+
+	return samples
+}
+
+func convertImageToASCII(filePath string, maxW, maxH int) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	img, _, err := image.Decode(file)
+	if err != nil {
+		return "", err
+	}
+
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+
+	targetW := maxW
+	targetH := maxH
+
+	// Maintain aspect ratio, but constrain bounds
+	aspect := float64(w) / float64(h)
+	if aspect > float64(targetW)/float64(targetH) {
+		targetH = int(float64(targetW) / aspect)
+	} else {
+		targetW = int(float64(targetH) * aspect)
+	}
+
+	if targetW < 5 {
+		targetW = 5
+	}
+	if targetH < 5 {
+		targetH = 5
+	}
+
+	chars := []rune(" .:-=+*#%@")
+
+	var sb strings.Builder
+	for y := 0; y < targetH; y++ {
+		for x := 0; x < targetW; x++ {
+			srcX := bounds.Min.X + x*w/targetW
+			srcY := bounds.Min.Y + y*h/targetH
+
+			color := img.At(srcX, srcY)
+			r, g, b, _ := color.RGBA()
+
+			// Grayscale conversion using luminance formula (0.0 to 1.0)
+			gray := (0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)) / 65535.0
+
+			idx := int(gray * float64(len(chars)))
+			if idx >= len(chars) {
+				idx = len(chars) - 1
+			}
+			if idx < 0 {
+				idx = 0
+			}
+
+			sb.WriteRune(chars[idx])
+		}
+		sb.WriteString("\r\n")
+	}
+
+	return sb.String(), nil
+}
+
+func showASCIIPainterDialog(
+	parent *wui.Window,
+	lblStatus *wui.Label,
+	btnVisMode *wui.Button,
+	btnPlayPause *wui.Button,
+	btnStop *wui.Button,
+	paintBox *wui.PaintBox,
+	updateUI func(func()),
+	refreshVisualizer func(),
+) {
+	editorWindow := wui.NewWindow()
+	editorWindow.SetInnerPosition(parent.X()+40, parent.Y()+40)
+	editorWindow.SetInnerWidth(800)
+	editorWindow.SetInnerHeight(490)
+	editorWindow.SetResizable(false)
+	editorWindow.SetHasMaxButton(false)
+	editorWindow.SetTitle("🎨 ASCII Spectrogram Painter")
+
+	font, _ := wui.NewFont(wui.FontDesc{Name: "Segoe UI", Height: -12})
+	editorWindow.SetFont(font)
+
+	monoFont, _ := wui.NewFont(wui.FontDesc{Name: "Consolas", Height: -14})
+
+	textEdit := wui.NewTextEdit()
+	textEdit.SetBounds(10, 10, 780, 370)
+	textEdit.SetWordWrap(false)
+	textEdit.SetWritesTabs(true)
+	textEdit.SetFont(monoFont)
+	editorWindow.Add(textEdit)
+
+	defaultArt := `#   #  ###  #####  #####  #####  ####  
+#   #   #      #      #   #      #   # 
+#####   #     #      #    ###    ####  
+#   #   #    #      #     #      #  #  
+#   #  ###  #####  #####  #####  #   # `
+	textEdit.SetText(defaultArt)
+
+	lblPresets := wui.NewLabel()
+	lblPresets.SetBounds(10, 393, 60, 20)
+	lblPresets.SetText("Presets:")
+	editorWindow.Add(lblPresets)
+
+	btnPresetHizzer := wui.NewButton()
+	btnPresetHizzer.SetBounds(75, 390, 75, 26)
+	btnPresetHizzer.SetText("Hizzer")
+	editorWindow.Add(btnPresetHizzer)
+
+	btnPresetSmiley := wui.NewButton()
+	btnPresetSmiley.SetBounds(155, 390, 75, 26)
+	btnPresetSmiley.SetText("Smiley")
+	editorWindow.Add(btnPresetSmiley)
+
+	btnPresetHeart := wui.NewButton()
+	btnPresetHeart.SetBounds(235, 390, 75, 26)
+	btnPresetHeart.SetText("Heart")
+	editorWindow.Add(btnPresetHeart)
+
+	btnPresetWave := wui.NewButton()
+	btnPresetWave.SetBounds(315, 390, 75, 26)
+	btnPresetWave.SetText("Wave")
+	editorWindow.Add(btnPresetWave)
+
+	btnPresetHizzer.SetOnClick(func() {
+		textEdit.SetText(defaultArt)
+	})
+
+	btnPresetSmiley.SetOnClick(func() {
+		textEdit.SetText(`      #####      
+    ##     ##    
+   #  #   #  #   
+  #           #  
+  #  #     #  #  
+  #   #####   #  
+   #         #   
+    ##     ##    
+      #####      `)
+	})
+
+	btnPresetHeart.SetOnClick(func() {
+		textEdit.SetText(`  ######   ######  
+ ##    ## ##    ## 
+#        #        #
+#                 #
+ #               # 
+  #             #  
+   #           #   
+    ##       ##    
+      ##   ##      
+        ###        `)
+	})
+
+	btnPresetWave.SetOnClick(func() {
+		textEdit.SetText(`    #            #      
+   # #          # #     
+  #   #        #   #    
+ #     #      #     #   
+#       #    #       #  
+         #  #         # 
+          ##           #`)
+	})
+
+	btnGeneratePlay := wui.NewButton()
+	btnGeneratePlay.SetBounds(10, 430, 180, 35)
+	btnGeneratePlay.SetText("🎨 Generate & Play")
+	editorWindow.Add(btnGeneratePlay)
+
+	btnStopAudio := wui.NewButton()
+	btnStopAudio.SetBounds(200, 430, 100, 35)
+	btnStopAudio.SetText("⏹ Stop")
+	editorWindow.Add(btnStopAudio)
+
+	btnImportImage := wui.NewButton()
+	btnImportImage.SetBounds(310, 430, 150, 35)
+	btnImportImage.SetText("🖼️ Image to ASCII")
+	editorWindow.Add(btnImportImage)
+
+	btnHelp := wui.NewButton()
+	btnHelp.SetBounds(470, 430, 150, 35)
+	btnHelp.SetText("ℹ️ How it Works")
+	editorWindow.Add(btnHelp)
+
+	btnClose := wui.NewButton()
+	btnClose.SetBounds(630, 430, 140, 35)
+	btnClose.SetText("Close")
+	editorWindow.Add(btnClose)
+
+	btnClose.SetOnClick(func() {
+		editorWindow.Close()
+	})
+
+	btnHelp.SetOnClick(func() {
+		wui.MessageBox("How It Works",
+			"This tool converts ASCII art into a playable audio signal!\n\n"+
+				"1. Columns of the text correspond to frequency bins in the waterfall spectrogram.\n"+
+				"2. Rows of the text correspond to segments of time in the audio (played bottom to top).\n"+
+				"3. Non-space characters act as active pixels, generating sound at that frequency and time.\n"+
+				"4. Different characters generate different volume levels (e.g. '@' is loud, '.' is quiet).\n\n"+
+				"Press 'Generate & Play' to see your artwork appear in the waterfall visualizer!")
+	})
+
+	btnStopAudio.SetOnClick(func() {
+		if playbackController.IsPlaying() {
+			playbackController.Stop()
+			updateUI(func() {
+				btnPlayPause.SetText("▶ Play")
+				btnStop.SetEnabled(false)
+				lblStatus.SetText("Playback stopped.")
+			})
+		}
+	})
+
+	btnImportImage.SetOnClick(func() {
+		openDlg := wui.NewFileOpenDialog()
+		openDlg.SetTitle("Open Image to Convert to ASCII")
+		openDlg.AddFilter("Images (PNG, JPG)", "png", "jpg", "jpeg")
+		ok, path := openDlg.ExecuteSingleSelection(editorWindow)
+		if ok {
+			asciiArt, err := convertImageToASCII(path, 60, 40)
+			if err != nil {
+				wui.MessageBoxError("Conversion Error",
+					"Failed to load or convert image: "+err.Error())
+				return
+			}
+			textEdit.SetText(asciiArt)
+		}
+	})
+
+	btnGeneratePlay.SetOnClick(func() {
+		art := textEdit.Text()
+		if len(strings.TrimSpace(art)) == 0 {
+			wui.MessageBox("Empty Canvas",
+				"Please enter some ASCII art or load a preset first!")
+			return
+		}
+
+		btnGeneratePlay.SetEnabled(false)
+		lblStatus.SetText("Generating ASCII Art audio...")
+
+		go func() {
+			samples := generateAudioFromASCII(art)
+
+			audioMutex.Lock()
+			audioSamples = samples
+			visualizerMode = 2 // Switch to Waterfall Spectrogram
+			waveformDirty = true
+			spectrumDirty = true
+			waterfallDirty = true
+			audioMutex.Unlock()
+
+			updateUI(func() {
+				btnGeneratePlay.SetEnabled(true)
+				btnVisMode.SetText("🌊 Waterfall Mode")
+
+				// Repaint and trigger visualizer recalculation
+				paintBox.Paint()
+				refreshVisualizer()
+
+				// Play the generated sound
+				if playbackController.IsPlaying() {
+					playbackController.Stop()
+				}
+
+				playbackController.Play(samples, func() {
+					updateUI(func() {
+						btnPlayPause.SetText("▶ Play")
+						btnStop.SetEnabled(false)
+						lblStatus.SetText("ASCII Spectrogram playback completed.")
+					})
+				})
+
+				btnPlayPause.SetText("⏸ Pause")
+				btnStop.SetEnabled(true)
+				lblStatus.SetText("Playing ASCII Spectrogram audio...")
+			})
+		}()
+	})
+
+	editorWindow.ShowModal()
 }
 
 func runGUI() {
@@ -2848,14 +3269,19 @@ func runGUI() {
 	})
 
 	btnGenerate := wui.NewButton()
-	btnGenerate.SetBounds(500, 103, 180, 26)
-	btnGenerate.SetText("Generate with Effects")
+	btnGenerate.SetBounds(500, 103, 140, 26)
+	btnGenerate.SetText("Generate Audio")
 	window.Add(btnGenerate)
 
 	btnAudioSettings := wui.NewButton()
-	btnAudioSettings.SetBounds(695, 103, 160, 26)
-	btnAudioSettings.SetText("🎛️ Audio Settings")
+	btnAudioSettings.SetBounds(650, 103, 140, 26)
+	btnAudioSettings.SetText("🎛️ Settings")
 	window.Add(btnAudioSettings)
+
+	btnASCIIPainter := wui.NewButton()
+	btnASCIIPainter.SetBounds(800, 103, 130, 26)
+	btnASCIIPainter.SetText("🎨 ASCII Paint")
+	window.Add(btnASCIIPainter)
 
 	paintBox := wui.NewPaintBox()
 	paintBox.SetBounds(20, 135, 680, 220)
@@ -3135,6 +3561,19 @@ audioSamples = generateAudioBuffers(textToMorse(txtMsg.Text()), strings.TrimSpac
 	}
 
 	btnGenerate.SetOnClick(generateAudio)
+
+	btnASCIIPainter.SetOnClick(func() {
+		showASCIIPainterDialog(
+			window,
+			lblStatus,
+			btnVisMode,
+			btnPlayPause,
+			btnStop,
+			paintBox,
+			updateUI,
+			refreshVisualizer,
+		)
+	})
 
 	btnAudioSettings.SetOnClick(func() {
 		showAudioSettingsDialog(window)
