@@ -2703,29 +2703,35 @@ func generateAudioFromASCII(art string) []float64 {
 	phases := make([]float64, W)
 
 	// Generate samples with smooth spline linear amplitude interpolation
+	// FIX: Process rows in normal order (0 to H-1) instead of reversed
 	for n := 0; n < totalSamples; n++ {
 		i := n / rowSamples // Segment index
-		r := H - 1 - i     // Played from bottom to top
+		// FIX: Use i directly instead of reversing with H-1-i
+		r := i
 
 		m := n % rowSamples
 		p := float64(m) / float64(rowSamples)
 
 		// Next and previous segments
-		r_next := H - 1 - (i + 1)
-		r_prev := H - 1 - (i - 1)
+		r_next := i + 1
+		r_prev := i - 1
 
+		// FIX: Also reverse the frequency bin order to fix mirroring
 		var sum float64
 		for c := 0; c < W; c++ {
-			A_curr := amps[r][c]
+			// Reverse the column index to fix horizontal mirroring
+			reversedC := W - 1 - c
+			
+			A_curr := amps[r][reversedC]
 
 			var A_next float64
-			if i < H-1 {
-				A_next = amps[r_next][c]
+			if r_next < H {
+				A_next = amps[r_next][reversedC]
 			}
 
 			var A_prev float64
-			if i > 0 {
-				A_prev = amps[r_prev][c]
+			if r_prev >= 0 {
+				A_prev = amps[r_prev][reversedC]
 			}
 
 			var targetAmp float64
@@ -2906,7 +2912,7 @@ func showASCIIPainterDialog(
 		openDlg.AddFilter("Images (PNG, JPG)", "png", "jpg", "jpeg")
 		ok, path := openDlg.ExecuteSingleSelection(editorWindow)
 		if ok {
-			asciiArt, err := convertImageToASCII(path, 60, 40)
+			asciiArt, err := convertImageToASCII(path, 70, 60)
 			if err != nil {
 				wui.MessageBoxError("Conversion Error",
 					"Failed to load or convert image: "+err.Error())
